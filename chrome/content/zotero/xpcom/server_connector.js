@@ -87,15 +87,20 @@ Zotero.Server.Connector.GetTranslators.prototype = {
 	 */
 	"init":function(data, sendResponseCallback) {
 		// Translator data
+		var me = this;
 		if(data.url) {
-			var me = this;
-			Zotero.Translators.getWebTranslatorsForLocation(data.url, function(data) {				
+			Zotero.Translators.getWebTranslatorsForLocation(data.url).then(function(data) {				
 				sendResponseCallback(200, "application/json",
 						JSON.stringify(me._serializeTranslators(data[0])));
 			});
 		} else {
-			var responseData = this._serializeTranslators(Zotero.Translators.getAll());
-			sendResponseCallback(200, "application/json", JSON.stringify(responseData));
+			Zotero.Translators.getAll().then(function(translators) {
+				var responseData = me._serializeTranslators(translators);
+				sendResponseCallback(200, "application/json", JSON.stringify(responseData));
+			}).catch(function(e) {
+				sendResponseCallback(500);
+				throw e;
+			}).done();
 		}
 	},
 	
@@ -103,7 +108,7 @@ Zotero.Server.Connector.GetTranslators.prototype = {
 		var responseData = [];
 		for each(var translator in translators) {
 			let serializableTranslator = {};
-			for each(var key in ["translatorID", "translatorType", "label", "creator", "target",
+			for (let key of ["translatorID", "translatorType", "label", "creator", "target",
 					"minVersion", "maxVersion", "priority", "browserSupport", "inRepository", "lastUpdated"]) {
 				serializableTranslator[key] = translator[key];
 			}
@@ -328,25 +333,57 @@ Zotero.Server.Connector.SaveItem.prototype = {
 	 * @param {Object} data POST data or GET query string
 	 * @param {Function} sendResponseCallback function to send HTTP response
 	 */
-	"init":function(url, data, sendResponseCallback) {
+	"init": Zotero.Promise.coroutine(function* (url, data, sendResponseCallback) {
 		// figure out where to save
-		var libraryID = null;
-		var collectionID = null;
 		var zp = Zotero.getActiveZoteroPane();
 		try {
 			var libraryID = zp.getSelectedLibraryID();
 			var collection = zp.getSelectedCollection();
 		} catch(e) {}
 		
+		// Default to My Library if present if pane not yet opened
+		if (!libraryID) {
+			let userLibrary = Zotero.Libraries.userLibrary;
+			if (userLibrary) {
+				libraryID = userLibrary.id;
+			}
+		}
+		
+		// If library isn't editable (or directly editable, in the case of My Publications), switch to
+		// My Library if present and editable, and otherwise fail
+		var library = Zotero.Libraries.get(libraryID);
+		if (!library.editable || library.libraryType == 'publications') {
+			let userLibrary = Zotero.Libraries.userLibrary;
+			if (userLibrary && userLibrary.editable) {
+				yield zp.collectionsView.selectLibrary(userLibrary.id);
+				libraryID = userLibrary.id;
+				collection = null;
+			}
+			else {
+				Zotero.logError("Can't add item to read-only library " + library.name);
+				sendResponseCallback(500);
+				return;
+			}
+		}
+		
 		var cookieSandbox = data["uri"] ? new Zotero.CookieSandbox(null, data["uri"],
-			data["cookie"] || "", url.userAgent) : null;
+			data["detailedCookies"] ? "" : data["cookie"] || "", url.userAgent) : null;
+		if(cookieSandbox && data.detailedCookies) {
+			cookieSandbox.addCookiesFromHeader(data.detailedCookies);
+		}
+		
 		for(var i=0; i<data.items.length; i++) {
 			Zotero.Server.Connector.AttachmentProgressManager.add(data.items[i].attachments);
 		}
 		
 		// save items
-		var itemSaver = new Zotero.Translate.ItemSaver(libraryID,
-			Zotero.Translate.ItemSaver.ATTACHMENT_MODE_DOWNLOAD, 1, undefined, cookieSandbox);
+		var itemSaver = new Zotero.Translate.ItemSaver({
+			libraryID,
+			collections: collection ? [collection.id] : undefined,
+			attachmentMode: Zotero.Translate.ItemSaver.ATTACHMENT_MODE_DOWNLOAD,
+			forceTagType: 1,
+			cookieSandbox
+		});
 		itemSaver.saveItems(data.items, function(returnValue, items) {
 			if(returnValue) {
 				try {
@@ -360,21 +397,17 @@ Zotero.Server.Connector.SaveItem.prototype = {
 						}
 					}
 					
-					for(var i=0; i<items.length; i++) {
-						if(collection) collection.addItem(items[i].id);
-					}
-					
 					sendResponseCallback(201, "application/json", JSON.stringify({"items":data.items}));
 				} catch(e) {
 					Zotero.logError(e);
 					sendResponseCallback(500);
 				}
 			} else {
+				Zotero.logError(items);
 				sendResponseCallback(500);
-				throw newItems;
 			}
 		}, Zotero.Server.Connector.AttachmentProgressManager.onProgress);
-	}
+	})
 }
 
 /**
@@ -399,54 +432,108 @@ Zotero.Server.Connector.SaveSnapshot.prototype = {
 	 * @param {String} data POST data or GET query string
 	 * @param {Function} sendResponseCallback function to send HTTP response
 	 */
-	"init":function(url, data, sendResponseCallback) {
+	init: Zotero.Promise.coroutine(function* (url, data, sendResponseCallback) {
 		Zotero.Server.Connector.Data[data["url"]] = "<html>"+data["html"]+"</html>";
-		Zotero.HTTP.processDocuments(["zotero://connector/"+encodeURIComponent(data["url"])],
-			function(doc) {
-				delete Zotero.Server.Connector.Data[data["url"]];
-				
-				// figure out where to save
-				var libraryID = null;
-				var collectionID = null;
-				var zp = Zotero.getActiveZoteroPane();
-				try {
-					var libraryID = zp.getSelectedLibraryID();
-					var collection = zp.getSelectedCollection();
-				} catch(e) {}
-				
-				try {
-					// create new webpage item
-					var item = new Zotero.Item("webpage");
-					item.libraryID = libraryID;
-					item.setField("title", doc.title);
-					item.setField("url", data.url);
-					item.setField("accessDate", "CURRENT_TIMESTAMP");
-					var itemID = item.save();
-					if(collection) collection.addItem(itemID);
+		
+		var zp = Zotero.getActiveZoteroPane();
+		try {
+			var libraryID = zp.getSelectedLibraryID();
+			var collection = zp.getSelectedCollection();
+		} catch(e) {}
+		
+		// Default to My Library if present if pane not yet opened
+		if (!libraryID) {
+			let userLibrary = Zotero.Libraries.userLibrary;
+			if (userLibrary) {
+				libraryID = userLibrary.id;
+			}
+		}
+		
+		// If library isn't editable (or directly editable, in the case of My Publications), switch to
+		// My Library if present and editable, and otherwise fail
+		var library = Zotero.Libraries.get(libraryID);
+		if (!library.editable || library.libraryType == 'publications') {
+			let userLibrary = Zotero.Libraries.userLibrary;
+			if (userLibrary && userLibrary.editable) {
+				yield zp.collectionsView.selectLibrary(userLibrary.id);
+				libraryID = userLibrary.id;
+				collection = null;
+			}
+			else {
+				Zotero.logError("Can't add item to read-only library " + library.name);
+				sendResponseCallback(500);
+				return;
+			}
+		}
+		
+		// determine whether snapshot can be saved
+		var filesEditable;
+		if (libraryID) {
+			let group = Zotero.Groups.getByLibraryID(libraryID);
+			filesEditable = group.filesEditable;
+		}
+		else {
+			filesEditable = true;
+		}
+		
+		var cookieSandbox = new Zotero.CookieSandbox(null, data["url"], data["cookie"], url.userAgent);
+		
+		if (data.pdf && filesEditable) {
+			delete Zotero.Server.Connector.Data[data.url];
+			
+			try {
+				yield Zotero.Attachments.importFromURL({
+					libraryID,
+					url: data.url,
+					collections: collection ? [collection.id] : undefined,
+					contentType: "application/pdf",
+					cookieSandbox
+				});
+				sendResponseCallback(201)
+			}
+			catch (e) {
+				sendResponseCallback(500);
+				throw e;
+			}
+		}
+		else {
+			Zotero.HTTP.processDocuments(
+				["zotero://connector/" + encodeURIComponent(data.url)],
+				Zotero.Promise.coroutine(function* (doc) {
+					delete Zotero.Server.Connector.Data[data.url];
 					
-					// determine whether snapshot can be saved
-					var filesEditable;
-					if (libraryID) {
-						var group = Zotero.Groups.getByLibraryID(libraryID);
-						filesEditable = group.filesEditable;
-					} else {
-						filesEditable = true;
+					try {
+						// create new webpage item
+						var item = new Zotero.Item("webpage");
+						item.libraryID = libraryID;
+						item.setField("title", doc.title);
+						item.setField("url", data.url);
+						item.setField("accessDate", "CURRENT_TIMESTAMP");
+						if (collection) {
+							item.setCollections([collection.id]);
+						}
+						var itemID = yield item.saveTx();
+						
+						// save snapshot
+						if (filesEditable && !data.skipSnapshot) {
+							yield Zotero.Attachments.importFromDocument({
+								document: doc,
+								parentItemID: itemID
+							});
+						}
+						
+						sendResponseCallback(201);
+					} catch(e) {
+						Zotero.debug("ERROR");
+						Zotero.debug(e);
+						sendResponseCallback(500);
+						throw e;
 					}
-					
-					// save snapshot
-					if(filesEditable) {
-						Zotero.Attachments.importFromDocument(doc, itemID);
-					}
-					
-					sendResponseCallback(201);
-				} catch(e) {
-					sendResponseCallback(500);
-					throw e;
-				}
-			},
-			null, null, false,
-			new Zotero.CookieSandbox(null, data["url"], data["cookie"], url.userAgent));
-	}
+				}),
+				null, null, false, cookieSandbox
+			);
+		}
+	})
 }
 
 /**
@@ -505,7 +592,7 @@ Zotero.Server.Connector.Progress.prototype = {
 	 */
 	"init":function(data, sendResponseCallback) {
 		sendResponseCallback(200, "application/json",
-			JSON.stringify([Zotero.Server.Connector.AttachmentProgressManager.getProgressForID(id) for each(id in data)]));
+			JSON.stringify(data.map(id => Zotero.Server.Connector.AttachmentProgressManager.getProgressForID(id))));
 	}
 };
 
@@ -531,7 +618,9 @@ Zotero.Server.Connector.GetTranslatorCode.prototype = {
 	 */
 	"init":function(postData, sendResponseCallback) {
 		var translator = Zotero.Translators.get(postData.translatorID);
-		sendResponseCallback(200, "application/javascript", translator.code);
+		translator.getCode().then(function(code) {
+			sendResponseCallback(200, "application/javascript", code);
+		});
 	}
 }
 

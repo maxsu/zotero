@@ -24,27 +24,315 @@
 */
 
 "use strict";
+Components.utils.import("resource://gre/modules/Services.jsm");
+Components.utils.import("resource://gre/modules/osfile.jsm");
 
 Zotero_Preferences.Sync = {
-	init: function () {
-		this.updateStorageSettings(null, null, true);
+	init: Zotero.Promise.coroutine(function* () {
+		this.updateStorageSettingsUI();
+
+		var username = Zotero.Users.getCurrentUsername() || Zotero.Prefs.get('sync.server.username') || " ";
+		var apiKey = yield Zotero.Sync.Data.Local.getAPIKey();
+		this.displayFields(apiKey ? username : "");
 		
-		document.getElementById('sync-password').value = Zotero.Sync.Server.password;
-		var pass = Zotero.Sync.Storage.WebDAV.password;
+		var pass = Zotero.Sync.Runner.getStorageController('webdav').password;
 		if (pass) {
 			document.getElementById('storage-password').value = pass;
 		}
+		
+		if (apiKey) {
+			try {
+				var keyInfo = yield Zotero.Sync.Runner.checkAccess(
+					Zotero.Sync.Runner.getAPIClient({apiKey}),
+					{timeout: 5000}
+				);
+				this.displayFields(keyInfo.username);
+				Zotero.Users.setCurrentUsername(keyInfo.username);
+			}
+			catch (e) {
+				// API key wrong/invalid
+				if (!(e instanceof Zotero.HTTP.UnexpectedStatusException)
+						&& !(e instanceof Zotero.HTTP.TimeoutException)
+						&& !(e instanceof Zotero.HTTP.BrowserOfflineException)) {
+					Zotero.alert(
+						window,
+						Zotero.getString('general.error'),
+						Zotero.getString('sync.error.apiKeyInvalid', Zotero.clientName)
+					);
+					this.unlinkAccount(false);
+				}
+				else {
+					throw e;
+				}
+			}
+		}
+	}),
+
+	displayFields: function (username) {
+		document.getElementById('sync-unauthorized').hidden = !!username;
+		document.getElementById('sync-authorized').hidden = !username;
+		document.getElementById('sync-reset-tab').disabled = !username;
+		document.getElementById('sync-username').value = username;
+		document.getElementById('sync-password').value = '';
+		document.getElementById('sync-username-textbox').value = Zotero.Prefs.get('sync.server.username');
+
+		var img = document.getElementById('sync-status-indicator');
+		img.removeAttribute('verified');
+		img.removeAttribute('animated');
+		
+		window.sizeToContent();
+	},
+
+
+	credentialsKeyPress: function (event) {
+		var username = document.getElementById('sync-username-textbox');
+		var password = document.getElementById('sync-password');
+
+		var syncAuthButton = document.getElementById('sync-auth-button');
+
+		syncAuthButton.setAttribute('disabled', 'true');
+
+		// When using backspace, the value is not updated until after the keypress event
+		setTimeout(function() {
+			if (username.value.length && password.value.length) {
+				syncAuthButton.setAttribute('disabled', 'false');
+			}
+		});
+
+		if (event.keyCode == 13) {
+			Zotero_Preferences.Sync.linkAccount(event);
+			event.preventDefault();
+		}
 	},
 	
-	updateStorageSettings: function (enabled, protocol, skipWarnings) {
-		if (enabled === null) {
-			enabled = document.getElementById('pref-storage-enabled').value;
+	
+	trimUsername: function () {
+		var tb = document.getElementById('sync-username-textbox');
+		var username = tb.value;
+		var trimmed = username.trim();
+		if (username != trimmed) {
+			tb.value = trimmed;
+			// Setting .value alone doesn't seem to cause the pref to sync, so set it manually
+			Zotero.Prefs.set('sync.server.username', trimmed);
+		}
+	},
+	
+	
+	linkAccount: Zotero.Promise.coroutine(function* (event) {
+		this.trimUsername();
+		var username = document.getElementById('sync-username-textbox').value;
+		var password = document.getElementById('sync-password').value;
+
+		if (!username.length || !password.length) {
+			this.updateSyncIndicator();
+			return;
+		}
+
+		// Try to acquire API key with current credentials
+		this.updateSyncIndicator('animated');
+		var json = yield Zotero.Sync.Runner.createAPIKeyFromCredentials(username, password);
+		this.updateSyncIndicator();
+
+		// Invalid credentials
+		if (!json) {
+			Zotero.alert(window,
+				Zotero.getString('general.error'),
+				Zotero.getString('sync.error.invalidLogin')
+			);
+			return;
+		}
+
+		if (!(yield Zotero.Sync.Data.Local.checkUser(window, json.userID, json.username))) {
+			// createAPIKeyFromCredentials will have created an API key,
+			// but user decided not to use it, so we remove it here.
+			Zotero.Sync.Runner.deleteAPIKey();
+			return;
+		}
+		this.displayFields(json.username);
+	}),
+
+	/**
+	 * Updates the auth indicator icon, depending on status
+	 * @param {string} status
+	 */
+	updateSyncIndicator: function (status) {
+		var img = document.getElementById('sync-status-indicator');
+		
+		img.removeAttribute('animated');
+		if (status == 'animated') {
+			img.setAttribute('animated', true);
+		}
+	},
+
+	unlinkAccount: Zotero.Promise.coroutine(function* (showAlert=true) {
+		if (showAlert) {
+			var check = {value: false};
+			var ps = Services.prompt;
+			var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_IS_STRING) +
+				(ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_CANCEL);
+			var index = ps.confirmEx(
+				null,
+				Zotero.getString('general.warning'),
+				Zotero.getString('account.unlinkWarning', Zotero.clientName),
+				buttonFlags,
+				Zotero.getString('account.unlinkWarning.button'), null, null,
+				Zotero.getString('account.unlinkWarning.removeData', Zotero.clientName),
+				check
+			);
+			if (index == 0) {
+				if (check.value) {
+					var resetDataDirFile = OS.Path.join(Zotero.getZoteroDirectory().path, 'reset-data-directory');
+					yield Zotero.File.putContentsAsync(resetDataDirFile, '');
+
+					yield Zotero.Sync.Runner.deleteAPIKey();
+					Zotero.Prefs.clear('sync.server.username');
+					return Zotero.Utilities.Internal.quitZotero(true);
+				}
+			} else {
+				return;
+			}
+		}
+
+		this.displayFields();
+		Zotero.Prefs.clear('sync.librariesToSync');
+		yield Zotero.Sync.Runner.deleteAPIKey();
+	}),
+	
+	
+	showLibrariesToSyncDialog: function() {
+		var io = {};
+		window.openDialog('chrome://zotero/content/preferences/librariesToSync.xul',
+			"zotero-preferences-librariesToSyncDialog", "chrome,modal,centerscreen", io);
+	},
+	
+	
+	dblClickLibraryToSync: function (event) {
+		var tree = document.getElementById("libraries-to-sync-tree");
+		var row = {}, col = {}, child = {};
+		tree.treeBoxObject.getCellAt(event.clientX, event.clientY, row, col, child);
+		
+		if (col.value.element.id == 'libraries-to-sync-checked') {
+			return;
+		}
+		// if dblclicked anywhere but the checkbox update pref
+		return this.toggleLibraryToSync(row.value);
+	},
+
+
+	clickLibraryToSync: function (event) {
+		var tree = document.getElementById("libraries-to-sync-tree");
+		var row = {}, col = {}, child = {};
+		tree.treeBoxObject.getCellAt(event.clientX, event.clientY, row, col, child);
+		
+		if (col.value.element.id != 'libraries-to-sync-checked') {
+			return;
+		}
+		// if clicked on checkbox update pref
+		return this.toggleLibraryToSync(row.value);
+	},
+	
+	
+	toggleLibraryToSync: function (index) {
+		var treechildren = document.getElementById('libraries-to-sync-rows');
+		if (index >= treechildren.childNodes.length) {
+			return;
+		}
+		var row = treechildren.childNodes[index];
+		var val = row.firstChild.childNodes[1].getAttribute('value');
+		if (!val) {
+			return
 		}
 		
-		var oldProtocol = document.getElementById('pref-storage-protocol').value;
-		if (protocol === null) {
-			protocol = oldProtocol;
+		var librariesToSkip = JSON.parse(Zotero.Prefs.get('sync.librariesToSkip') || '[]');
+		var indexOfId = librariesToSkip.indexOf(val);
+		if (indexOfId == -1) {
+			librariesToSkip.push(val);
+		} else {
+			librariesToSkip.splice(indexOfId, 1);
 		}
+		Zotero.Prefs.set('sync.librariesToSkip', JSON.stringify(librariesToSkip));
+		 
+		var cell = row.firstChild.firstChild;
+		cell.setAttribute('value', indexOfId != -1);
+	},
+	
+	
+	initLibrariesToSync: Zotero.Promise.coroutine(function* () {
+		var tree = document.getElementById("libraries-to-sync-tree");
+		var treechildren = document.getElementById('libraries-to-sync-rows');
+		while (treechildren.hasChildNodes()) {
+			treechildren.removeChild(treechildren.firstChild);
+		}
+		
+		function addRow(libraryName, id, checked=false, editable=true) {
+			var treeitem = document.createElement('treeitem');
+			var treerow = document.createElement('treerow');
+			var checkboxCell = document.createElement('treecell');
+			var nameCell = document.createElement('treecell');
+			
+			nameCell.setAttribute('label', libraryName);
+			nameCell.setAttribute('value', id);
+			nameCell.setAttribute('editable', false);
+			checkboxCell.setAttribute('value', checked);
+			checkboxCell.setAttribute('editable', editable);
+			
+			treerow.appendChild(checkboxCell);
+			treerow.appendChild(nameCell);
+			treeitem.appendChild(treerow);
+			treechildren.appendChild(treeitem);
+		}
+		
+		// Add loading row while we're loading a group list
+		var loadingLabel = Zotero.getString("zotero.preferences.sync.librariesToSync.loadingLibraries");
+		addRow(loadingLabel, "loading", false, false);
+
+		var apiKey = yield Zotero.Sync.Data.Local.getAPIKey();
+		var client = Zotero.Sync.Runner.getAPIClient({apiKey});
+		var groups = [];
+		try {
+			// Load up remote groups
+			var keyInfo = yield Zotero.Sync.Runner.checkAccess(client, {timeout: 5000});
+			groups = yield client.getGroups(keyInfo.userID);
+		}
+		catch (e) {
+			// Connection problems
+			if ((e instanceof Zotero.HTTP.UnexpectedStatusException)
+					|| (e instanceof Zotero.HTTP.TimeoutException)
+					|| (e instanceof Zotero.HTTP.BrowserOfflineException)) {
+				Zotero.alert(
+					window,
+					Zotero.getString('general.error'),
+					Zotero.getString('sync.error.checkConnection', Zotero.clientName)
+				);
+			}
+			else {
+				throw e;
+			}
+			document.getElementsByTagName('dialog')[0].acceptDialog();
+		}
+
+		// Remove the loading row
+		treechildren.removeChild(treechildren.firstChild);
+
+		var librariesToSkip = JSON.parse(Zotero.Prefs.get('sync.librariesToSkip') || '[]');
+		// Add default rows
+		addRow(Zotero.getString("pane.collections.libraryAndFeeds"), "L" + Zotero.Libraries.userLibraryID, 
+			librariesToSkip.indexOf("L" + Zotero.Libraries.userLibraryID) == -1);
+		addRow(Zotero.getString("pane.collections.publications"), "L" + Zotero.Libraries.publicationsLibraryID, 
+			librariesToSkip.indexOf("L" + Zotero.Libraries.publicationsLibraryID) == -1);
+		
+		// Add group rows
+		for (let group of groups) {
+			addRow(group.data.name, "G" + group.id, librariesToSkip.indexOf("G" + group.id) == -1);
+		}
+	}),
+
+
+	updateStorageSettingsUI: Zotero.Promise.coroutine(function* () {
+		this.unverifyStorageServer();
+		
+		var protocol = document.getElementById('pref-storage-protocol').value;
+		var enabled = document.getElementById('pref-storage-enabled').value;
 		
 		var storageSettings = document.getElementById('storage-settings');
 		var protocolMenu = document.getElementById('storage-protocol');
@@ -60,72 +348,21 @@ Zotero_Preferences.Sync = {
 			sep.hidden = true;
 		}
 		
-		var menulists = storageSettings.getElementsByTagName('menulist');
-		for each(var menulist in menulists) {
-			if (menulist.className == 'storage-personal') {
-				menulist.disabled = !enabled;
-			}
+		var menulists = document.querySelectorAll('#storage-settings menulist.storage-mode');
+		for (let menulist of menulists) {
+			menulist.disabled = !enabled;
 		}
 		
-		if (!skipWarnings) {
-			// WARN if going between
-		}
+		this.updateStorageTerms();
 		
-		if (oldProtocol == 'zotero' && protocol == 'webdav') {
-			var sql = "SELECT COUNT(*) FROM version WHERE schema LIKE 'storage_zfs%'";
-			if (Zotero.DB.valueQuery(sql)) {
-				var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
-										.getService(Components.interfaces.nsIPromptService);
-				var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_IS_STRING)
-									+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_IS_STRING)
-									+ ps.BUTTON_DELAY_ENABLE;
-				var account = Zotero.Sync.Server.username;
-				var index = ps.confirmEx(
-					null,
-					Zotero.getString('zotero.preferences.sync.purgeStorage.title'),
-					Zotero.getString('zotero.preferences.sync.purgeStorage.desc'),
-					buttonFlags,
-					Zotero.getString('zotero.preferences.sync.purgeStorage.confirmButton'),
-					Zotero.getString('zotero.preferences.sync.purgeStorage.cancelButton'), null, null, {}
-				);
-				
-				if (index == 0) {
-					var sql = "INSERT OR IGNORE INTO settings VALUES (?,?,?)";
-					Zotero.DB.query(sql, ['storage', 'zfsPurge', 'user']);
-					
-					Zotero.Sync.Storage.ZFS.purgeDeletedStorageFiles()
-					.then(function () {
-						ps.alert(
-							null,
-							Zotero.getString("general.success"),
-							"Attachment files from your personal library have been removed from the Zotero servers."
-						);
-					})
-					.catch(function (e) {
-						Zotero.debug(e, 1);
-						Components.utils.reportError(e);
-						
-						ps.alert(
-							null,
-							Zotero.getString("general.error"),
-							"An error occurred. Please try again later."
-						);
-					});
-				}
-			}
-		}
-		
-		var self = this;
-		setTimeout(function () {
-			self.updateStorageTerms();
-		}, 1)
-	},
+		window.sizeToContent();
+	}),
 	
 	
 	updateStorageSettingsGroups: function (enabled) {
 		var storageSettings = document.getElementById('storage-settings');
 		var menulists = storageSettings.getElementsByTagName('menulist');
-		for each(var menulist in menulists) {
+		for (let menulist of menulists) {
 			if (menulist.className == 'storage-groups') {
 				menulist.disabled = !enabled;
 			}
@@ -149,13 +386,90 @@ Zotero_Preferences.Sync = {
 	},
 	
 	
-	unverifyStorageServer: function () {
-		Zotero.Prefs.set('sync.storage.verified', false);
-		Zotero.Sync.Storage.resetAllSyncStates(null, true, false);
-	},
+	onStorageSettingsKeyPress: Zotero.Promise.coroutine(function* (event) {
+		if (event.keyCode == 13) {
+			yield this.onStorageSettingsChange();
+			yield this.verifyStorageServer();
+		}
+	}),
 	
 	
-	verifyStorageServer: function () {
+	onStorageSettingsChange: Zotero.Promise.coroutine(function* () {
+		// Clean URL
+		var urlPref = document.getElementById('pref-storage-url');
+		urlPref.value = urlPref.value.replace(/(^https?:\/\/|\/zotero\/?$|\/$)/g, '');
+		
+		var oldProtocol = document.getElementById('pref-storage-protocol').value;
+		var oldEnabled = document.getElementById('pref-storage-enabled').value;
+		
+		yield Zotero.Promise.delay(1);
+		
+		var newProtocol = document.getElementById('pref-storage-protocol').value;
+		var newEnabled = document.getElementById('pref-storage-enabled').value;
+		
+		if (oldProtocol != newProtocol) {
+			yield Zotero.Sync.Storage.Local.resetModeSyncStates(oldProtocol);
+		}
+		
+		if (oldProtocol == 'webdav') {
+			this.unverifyStorageServer();
+			Zotero.Sync.Runner.resetStorageController(oldProtocol);
+			
+			var username = document.getElementById('storage-username').value;
+			var password = document.getElementById('storage-password').value;
+			if (username) {
+				Zotero.Sync.Runner.getStorageController('webdav').password = password;
+			}
+		}
+		
+		if (oldProtocol == 'zotero' && newProtocol == 'webdav') {
+			var sql = "SELECT COUNT(*) FROM settings "
+				+ "WHERE setting='storage' AND key='zfsPurge' AND value='user'";
+			if (!Zotero.DB.valueQueryAsync(sql)) {
+				var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
+					.getService(Components.interfaces.nsIPromptService);
+				var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_IS_STRING)
+					+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_IS_STRING)
+					+ ps.BUTTON_DELAY_ENABLE;
+				var account = Zotero.Sync.Server.username;
+				var index = ps.confirmEx(
+					null,
+					Zotero.getString('zotero.preferences.sync.purgeStorage.title'),
+					Zotero.getString('zotero.preferences.sync.purgeStorage.desc'),
+					buttonFlags,
+					Zotero.getString('zotero.preferences.sync.purgeStorage.confirmButton'),
+					Zotero.getString('zotero.preferences.sync.purgeStorage.cancelButton'), null, null, {}
+				);
+				
+				if (index == 0) {
+					var sql = "INSERT OR IGNORE INTO settings VALUES (?,?,?)";
+					yield Zotero.DB.queryAsync(sql, ['storage', 'zfsPurge', 'user']);
+					
+					try {
+						yield Zotero.Sync.Storage.ZFS.purgeDeletedStorageFiles();
+						ps.alert(
+							null,
+							Zotero.getString("general.success"),
+							"Attachment files from your personal library have been removed from the Zotero servers."
+						);
+					}
+					catch (e) {
+						Zotero.logError(e);
+						ps.alert(
+							null,
+							Zotero.getString("general.error"),
+							"An error occurred. Please try again later."
+						);
+					}
+				}
+			}
+		}
+		
+		this.updateStorageSettingsUI();
+	}),
+	
+	
+	verifyStorageServer: Zotero.Promise.coroutine(function* () {
 		Zotero.debug("Verifying storage");
 		
 		var verifyButton = document.getElementById("storage-verify");
@@ -169,78 +483,56 @@ Zotero_Preferences.Sync = {
 		abortButton.hidden = false;
 		progressMeter.hidden = false;
 		
+		var success = false;
 		var request = null;
-		var onDone = false;
 		
-		Zotero.Sync.Storage.WebDAV.checkServer()
-		// Get the XMLHttpRequest for possible cancelling
-		.progress(function (obj) {
-			request = obj.xmlhttp;
-		})
-		.finally(function () {
+		var controller = Zotero.Sync.Runner.getStorageController('webdav');
+		
+		try {
+			yield controller.checkServer({
+				// Get the XMLHttpRequest for possible cancelling
+				onRequest: r => request = r
+			})
+			
+			success = true;
+		}
+		catch (e) {
+			if (e instanceof controller.VerificationError) {
+				switch (e.error) {
+				case "NO_URL":
+					urlField.focus();
+					break;
+				
+				case "NO_USERNAME":
+					usernameField.focus();
+					break;
+				
+				case "NO_PASSWORD":
+				case "AUTH_FAILED":
+					passwordField.focus();
+					break;
+				}
+			}
+			success = yield controller.handleVerificationError(e);
+		}
+		finally {
 			verifyButton.hidden = false;
 			abortButton.hidden = true;
 			progressMeter.hidden = true;
-		})
-		.spread(function (uri, status) {
-			switch (status) {
-				case Zotero.Sync.Storage.ERROR_NO_URL:
-					onDone = function () {
-						urlField.focus();
-					};
-					break;
-				
-				case Zotero.Sync.Storage.ERROR_NO_USERNAME:
-					onDone = function () {
-						usernameField.focus();
-					};
-					break;
-				
-				case Zotero.Sync.Storage.ERROR_NO_PASSWORD:
-				case Zotero.Sync.Storage.ERROR_AUTH_FAILED:
-					onDone = function () {
-						passwordField.focus();
-					};
-					break;
-			}
+		}
+		
+		if (success) {
+			Zotero.debug("WebDAV verification succeeded");
 			
-			return Zotero.Sync.Storage.WebDAV.checkServerCallback(uri, status, window);
-		})
-		.then(function (success) {
-			if (success) {
-				Zotero.debug("WebDAV verification succeeded");
-				
-				var promptService = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
-					.getService(Components.interfaces.nsIPromptService);
-				promptService.alert(
-					window,
-					Zotero.getString('sync.storage.serverConfigurationVerified'),
-					Zotero.getString('sync.storage.fileSyncSetUp')
-				);
-				Zotero.Prefs.set("sync.storage.verified", true);
-			}
-			else {
-				Zotero.debug("WebDAV verification failed");
-				if (onDone) {
-					setTimeout(function () {
-						onDone();
-					}, 1);
-				}
-			}
-		})
-		.catch(function (e) {
-			Zotero.debug("WebDAV verification failed");
-			Zotero.debug(e, 1);
-			Components.utils.reportError(e);
-			Zotero.Utilities.Internal.errorPrompt(Zotero.getString('general.error'), e);
-			
-			if (onDone) {
-				setTimeout(function () {
-					onDone();
-				}, 1);
-			}
-		})
-		.done();
+			Zotero.alert(
+				window,
+				Zotero.getString('sync.storage.serverConfigurationVerified'),
+				Zotero.getString('sync.storage.fileSyncSetUp')
+			);
+		}
+		else {
+			Zotero.logError("WebDAV verification failed");
+		}
 		
 		abortButton.onclick = function () {
 			if (request) {
@@ -252,6 +544,12 @@ Zotero_Preferences.Sync = {
 				progressMeter.hidden = true;
 			}
 		}
+	}),
+	
+	
+	unverifyStorageServer: function () {
+		Zotero.debug("Unverifying storage");
+		Zotero.Prefs.set('sync.storage.verified', false);
 	},
 	
 	
@@ -270,11 +568,11 @@ Zotero_Preferences.Sync = {
 	},
 	
 	
-	handleSyncReset: function (action) {
+	handleSyncReset: Zotero.Promise.coroutine(function* (action) {
 		var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
 								.getService(Components.interfaces.nsIPromptService);
 		
-		if (!Zotero.Sync.Server.enabled) {
+		if (!Zotero.Sync.Runner.enabled) {
 			ps.alert(
 				null,
 				Zotero.getString('general.error'),
@@ -285,9 +583,44 @@ Zotero_Preferences.Sync = {
 			return;
 		}
 		
-		var account = Zotero.Sync.Server.username;
-		
 		switch (action) {
+			case 'full-sync':
+				var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_IS_STRING)
+					+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_CANCEL)
+					+ ps.BUTTON_POS_1_DEFAULT;
+				var index = ps.confirmEx(
+					null,
+					// TODO: localize
+					Zotero.getString('general.warning'),
+					"Zotero will compare all local and remote data and merge any data that does not "
+						+ "exist in both locations.\n\n"
+						+ "This option is not necessary during normal usage and should "
+						+ "generally be used only to troubleshoot specific issues as recommended "
+						+ "by Zotero support staff.",
+					buttonFlags,
+					"Sync",
+					null, null, null, {}
+				);
+				
+				switch (index) {
+				case 0:
+					let libraries = Zotero.Libraries.getAll().filter(library => library.syncable);
+					yield Zotero.DB.executeTransaction(function* () {
+						for (let library of libraries) {
+							library.libraryVersion = -1;
+							yield library.save();
+						}
+					});
+					yield Zotero.Sync.Runner.sync();
+					break;
+					
+					// Cancel
+				case 1:
+					return;
+				}
+				
+				break;
+			
 			case 'restore-from-server':
 				var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_IS_STRING)
 									+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_CANCEL)
@@ -372,7 +705,7 @@ Zotero_Preferences.Sync = {
 								available to the custom callbacks
 								
 								onSuccess: function () {
-									Zotero.Sync.Runner.setSyncIcon();
+									Zotero.Sync.Runner.updateIcons();
 									ps.alert(
 										null,
 										"Restore Completed",
@@ -435,5 +768,5 @@ Zotero_Preferences.Sync = {
 			default:
 				throw ("Invalid action '" + action + "' in handleSyncReset()");
 		}
-	}
+	})
 };

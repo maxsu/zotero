@@ -28,12 +28,20 @@
 Zotero_Preferences.Search = {
 	init: function () {
 		document.getElementById('fulltext-rebuildIndex').setAttribute('label',
-			Zotero.getString('zotero.preferences.search.rebuildIndex'));
+			Zotero.getString('zotero.preferences.search.rebuildIndex')
+				+ Zotero.getString('punctuation.ellipsis'));
 		document.getElementById('fulltext-clearIndex').setAttribute('label',
-			Zotero.getString('zotero.preferences.search.clearIndex'));
+			Zotero.getString('zotero.preferences.search.clearIndex')
+				+ Zotero.getString('punctuation.ellipsis'));
 		this.updatePDFToolsStatus();
 		
 		this.updateIndexStats();
+		
+		// Quick hack to support install prompt from PDF recognize option
+		var io = window.arguments[0];
+		if (io.action && io.action == 'pdftools-install') {
+			this.checkPDFToolsDownloadVersion();
+		}
 	},
 	
 	/*
@@ -153,245 +161,112 @@ Zotero_Preferences.Search = {
 	 * Check available versions of PDF tools from server and prompt for installation
 	 * if a newer version is available
 	 */
-	checkPDFToolsDownloadVersion: function () {
-		var url = Zotero.Fulltext.pdfToolsDownloadBaseURL
-					+ Zotero.platform.replace(' ', '-') + '.latest';
-		
-		// Find latest version for this platform
-		var self = this;
-		var sent = Zotero.HTTP.doGet(url, function (xmlhttp) {
-			try {
-				if (xmlhttp.status == 200) {
-					var converterIsRegistered = Zotero.Fulltext.pdfConverterIsRegistered();
-					var infoIsRegistered = Zotero.Fulltext.pdfInfoIsRegistered();
-					var bothRegistered = converterIsRegistered && infoIsRegistered;
-					
-					var converterVersion = xmlhttp.responseText.split(/\s/)[0];
-					var infoVersion = xmlhttp.responseText.split(/\s/)[1];
-					
-					var converterVersionAvailable = converterVersion &&
-						(!converterIsRegistered ||
-							Zotero.Fulltext.pdfConverterVersion == 'UNKNOWN' ||
-							converterVersion > Zotero.Fulltext.pdfConverterVersion);
-					var infoVersionAvailable = infoVersion &&
-						(!infoIsRegistered ||
-							Zotero.Fulltext.pdfInfoVersion == 'UNKNOWN' ||
-							infoVersion > Zotero.Fulltext.pdfInfoVersion);
-					var bothAvailable = converterVersionAvailable && infoVersionAvailable;
-					
-					/*
-					Zotero.debug(converterIsRegistered);
-					Zotero.debug(infoIsRegistered);
-					Zotero.debug(converterVersion);
-					Zotero.debug(infoVersion);
-					Zotero.debug(Zotero.Fulltext.pdfConverterVersion);
-					Zotero.debug(Zotero.Fulltext.pdfInfoVersion);
-					Zotero.debug(converterVersionAvailable);
-					Zotero.debug(infoVersionAvailable);
-					*/
-					
-					// Up to date -- disable update button
-					if (!converterVersionAvailable && !infoVersionAvailable) {
-						var button = document.getElementById('pdftools-update-button');
-						button.setAttribute('label', Zotero.getString('zotero.preferences.update.upToDate'));
-						button.setAttribute('disabled', true);
-					}
-					// New version available -- display update prompt
-					else {
-						var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"].
-								createInstance(Components.interfaces.nsIPromptService);
-						var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_IS_STRING)
-							+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_CANCEL);
-						
-						var msg = Zotero.getString('zotero.preferences.search.pdf.available'
-							+ ((converterIsRegistered || infoIsRegistered) ? 'Updates' : 'Downloads'),
-							[Zotero.platform, 'zotero.org']) + '\n\n';
-						
-						if (converterVersionAvailable) {
-							let tvp = Zotero.getString('zotero.preferences.search.pdf.toolVersionPlatform',
-								[Zotero.Fulltext.pdfConverterName, converterVersion]);
-							msg += '- ' + tvp + '\n';
-						}
-						if (infoVersionAvailable) {
-							let tvp = Zotero.getString('zotero.preferences.search.pdf.toolVersionPlatform',
-								[Zotero.Fulltext.pdfInfoName, infoVersion]);
-							msg += '- ' + tvp + '\n';
-						}
-						msg += '\n';
-						msg += Zotero.getString('zotero.preferences.search.pdf.zoteroCanInstallVersion'
-								+ (bothAvailable ? 's' : ''));
-						
-						var index = ps.confirmEx(null,
-							converterIsRegistered ?
-								Zotero.getString('general.updateAvailable') : '',
-							msg,
-							buttonFlags,
-							converterIsRegistered ?
-								Zotero.getString('general.upgrade') :
-								Zotero.getString('general.install'),
-							null, null, null, {});
-						
-						if (index == 0) {
-							var installVersions = {
-								converter: converterVersionAvailable ?
-									converterVersion : null,
-								info: infoVersionAvailable ?
-									infoVersion : null
-							};
-							self.installPDFTools(installVersions);
-						}
-					}
-				}
-				// Version not found for platform
-				else if (xmlhttp.status == 404) {
-					self.onPDFToolsDownloadError(404);
-				}
-			}
-			catch (e) {
-				self.onPDFToolsDownloadError(e);
-			}
-		});
-		
-		// Browser is offline
-		if (!sent) {
-			this.onPDFToolsDownloadError();
-		}
-	},
-	
-	
-	/*
-	 * Begin installation of specified PDF tools from server -- does a HEAD call to
-	 * make sure file exists and then calls downloadPDFTool() if so
-	 */
-	installPDFTools: function (installVersions) {
-		if (!installVersions) {
-			installVersions = {
-				converter: true,
-				info: true
-			};
-		}
-		
-		// We install the converter first if it's available
-		var url = Zotero.Fulltext.pdfToolsDownloadBaseURL;
-		if (installVersions.converter) {
-			var tool = 'converter';
-			var version = installVersions.converter;
-			url += Zotero.Fulltext.pdfConverterFileName + '-' + installVersions.converter;
-		}
-		else if (installVersions.info) {
-			var tool = 'info';
-			var version = installVersions.info;
-			url += Zotero.Fulltext.pdfInfoFileName + '-' + installVersions.info;
-		}
-		else {
-			return; 
-		}
-		
-		// Find latest version for this platform
-		var self = this;
-		var sent = Zotero.HTTP.doHead(url, function (xmlhttp) {
-			try {
-				if (xmlhttp.status == 200) {
-					// If doing both and on converter, chain pdfinfo
-					if (installVersions.converter && installVersions.info) {
-						self.downloadPDFTool(tool, version, function () {
-							return self.installPDFTools({ info: installVersions.info });
-						});
-					}
-					else {
-						self.downloadPDFTool(tool, version);
-					}
-				}
-				// Version not found for platform
-				else if (xmlhttp.status == 404) {
-					self.onPDFToolsDownloadError(404);
-				}
-			}
-			catch (e) {
-				self.onPDFToolsDownloadError(e);
-			}
-		});
-		
-		// Browser is offline
-		if (!sent) {
-			self.onPDFToolsDownloadError();
-		}
-	},
-	
-	
-	/*
-	 * Download and install specified PDF tool
-	 */
-	downloadPDFTool: function (tool, version, callback) {
-		var ioService = Components.classes["@mozilla.org/network/io-service;1"]
-							.getService(Components.interfaces.nsIIOService);
-		
-		if (tool == 'converter') {
-			var fileName = Zotero.Fulltext.pdfConverterFileName; 
-		}
-		else {
-			var fileName = Zotero.Fulltext.pdfInfoFileName;
-		}
-		
-		
-		var url = Zotero.Fulltext.pdfToolsDownloadBaseURL + fileName + '-' + version;
-		var uri = ioService.newURI(url, null, null);
-		
-		var file = Zotero.getZoteroDirectory();
-		file.append(fileName);
-		var fileURL = ioService.newFileURI(file);
-		
-		const nsIWBP = Components.interfaces.nsIWebBrowserPersist;
-		var wbp = Components.classes["@mozilla.org/embedding/browser/nsWebBrowserPersist;1"]
-					.createInstance(nsIWBP);
-		
-		var self = this;
-		var progressListener = new Zotero.WebProgressFinishListener(function () {
-			// Set permissions to 755
-			if (Zotero.isMac) {
-				file.permissions = 33261;
-			}
-			else if (Zotero.isLinux) {
-				file.permissions = 493;
-			}
-			
-			// Write the version number to a file
-			var versionFile = Zotero.getZoteroDirectory();
-			versionFile.append(fileName + '.version');
-			Zotero.File.putContents(versionFile, version + '');
-			
-			Zotero.Fulltext.registerPDFTool(tool);
-			
-			// Used to install info tool after converter
-			if (callback) {
-				callback();
-			}
-			// If done
-			else {
-				self.updatePDFToolsStatus();
-			}
-		});
-		
-		/*
-		var tr = Components.classes["@mozilla.org/transfer;1"].
-			createInstance(Components.interfaces.nsITransfer);
-		tr.init(uri, fileURL, "", null, null, null, wbp);
-		*/
-		
-		document.getElementById('pdftools-update-button').disabled = true;
-		var str = Zotero.getString('zotero.preferences.search.pdf.downloading');
-		document.getElementById('pdftools-update-button').setAttribute('label', str);
-		
-		wbp.progressListener = progressListener;
-		Zotero.debug("Saving " + uri.spec + " to " + fileURL.spec);
+	checkPDFToolsDownloadVersion: Zotero.Promise.coroutine(function* () {
 		try {
-			wbp.saveURI(uri, null, null, null, null, fileURL);
-		} catch(e if e.name === "NS_ERROR_XPC_NOT_ENOUGH_ARGS") {
-			// https://bugzilla.mozilla.org/show_bug.cgi?id=794602
-			// XXX Always use when we no longer support Firefox < 18
-			wbp.saveURI(uri, null, null, null, null, fileURL, null);
+			var latestVersion = yield Zotero.Fulltext.getLatestPDFToolsVersion();
+			
+			var converterIsRegistered = Zotero.Fulltext.pdfConverterIsRegistered();
+			var infoIsRegistered = Zotero.Fulltext.pdfInfoIsRegistered();
+			var bothRegistered = converterIsRegistered && infoIsRegistered;
+			
+			// On Windows, install if not installed or anything other than 3.02a
+			if (Zotero.isWin) {
+				var converterVersionAvailable = !converterIsRegistered
+					|| Zotero.Fulltext.pdfConverterVersion != '3.02a';
+				var infoVersionAvailable = !infoIsRegistered
+					|| Zotero.Fulltext.pdfInfoVersion != '3.02a';
+				var bothAvailable = converterVersionAvailable && infoVersionAvailable;
+			}
+			// Install if not installed, version unknown, outdated, or
+			// Xpdf 3.02/3.04 (to upgrade to Poppler),
+			else {
+				var converterVersionAvailable = (!converterIsRegistered ||
+						Zotero.Fulltext.pdfConverterVersion == 'UNKNOWN'
+							|| latestVersion > Zotero.Fulltext.pdfConverterVersion
+							|| (!latestVersion.startsWith('3.02')
+								&& Zotero.Fulltext.pdfConverterVersion.startsWith('3.02'))
+							|| (!latestVersion.startsWith('3.02') && latestVersion != '3.04'
+								&& Zotero.Fulltext.pdfConverterVersion == '3.04'));
+				var infoVersionAvailable = (!infoIsRegistered ||
+						Zotero.Fulltext.pdfInfoVersion == 'UNKNOWN'
+							|| latestVersion > Zotero.Fulltext.pdfInfoVersion
+							|| (!latestVersion.startsWith('3.02')
+								&& Zotero.Fulltext.pdfInfoVersion.startsWith('3.02'))
+							|| (!latestVersion.startsWith('3.02') && latestVersion != '3.04'
+								&& Zotero.Fulltext.pdfInfoVersion == '3.04'));
+				var bothAvailable = converterVersionAvailable && infoVersionAvailable;
+			}
+			
+			// Up to date -- disable update button
+			if (!converterVersionAvailable && !infoVersionAvailable) {
+				var button = document.getElementById('pdftools-update-button');
+				button.setAttribute('label', Zotero.getString('zotero.preferences.update.upToDate'));
+				button.setAttribute('disabled', true);
+				return;
+			}
+			
+			// New version available -- display update prompt
+			var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"].
+					createInstance(Components.interfaces.nsIPromptService);
+			var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_IS_STRING)
+				+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_CANCEL);
+			
+			var msg = Zotero.getString('zotero.preferences.search.pdf.available'
+				+ ((converterIsRegistered || infoIsRegistered) ? 'Updates' : 'Downloads'),
+				[Zotero.platform, 'zotero.org']) + '\n\n';
+			
+			if (converterVersionAvailable) {
+				let tvp = Zotero.getString('zotero.preferences.search.pdf.toolVersionPlatform',
+					[Zotero.Fulltext.pdfConverterName, latestVersion]);
+				msg += '- ' + tvp + '\n';
+			}
+			if (infoVersionAvailable) {
+				let tvp = Zotero.getString('zotero.preferences.search.pdf.toolVersionPlatform',
+					[Zotero.Fulltext.pdfInfoName, latestVersion]);
+				msg += '- ' + tvp + '\n';
+			}
+			msg += '\n';
+			msg += Zotero.getString('zotero.preferences.search.pdf.zoteroCanInstallVersion'
+					+ (bothAvailable ? 's' : ''));
+			
+			var index = ps.confirmEx(null,
+				converterIsRegistered ?
+					Zotero.getString('general.updateAvailable') : '',
+				msg,
+				buttonFlags,
+				converterIsRegistered ?
+					Zotero.getString('general.upgrade') :
+					Zotero.getString('general.install'),
+				null, null, null, {});
+			
+			if (index != 0) {
+				return;
+			}
+			
+			document.getElementById('pdftools-update-button').disabled = true;
+			var str = Zotero.getString('zotero.preferences.search.pdf.downloading');
+			document.getElementById('pdftools-update-button').setAttribute('label', str);
+			
+			if (converterVersionAvailable) {
+				yield Zotero.Fulltext.downloadPDFTool('converter', latestVersion)
+				.catch(function (e) {
+					Zotero.logError(e);
+					throw new Error("Error downloading pdftotext");
+				});
+			}
+			if (infoVersionAvailable) {
+				yield Zotero.Fulltext.downloadPDFTool('info', latestVersion)
+				.catch(function (e) {
+					Zotero.logError(e);
+					throw new Error("Error downloading pdfinfo");
+				});
+			}
+			this.updatePDFToolsStatus();
 		}
-	},
+		catch (e) {
+			this.onPDFToolsDownloadError(e);
+		}
+	}),
 	
 	
 	onPDFToolsDownloadError: function (e) {
@@ -400,16 +275,10 @@ Zotero_Preferences.Search = {
 				Zotero.Fulltext.pdfToolsName) + ' '
 				+ Zotero.getString('zotero.preferences.search.pdf.viewManualInstructions');
 		}
-		else if (e) {
+		else {
 			Components.utils.reportError(e);
 			var str = Zotero.getString('zotero.preferences.search.pdf.toolsDownloadError', Zotero.Fulltext.pdfToolsName)
 				+ ' ' + Zotero.getString('zotero.preferences.search.pdf.tryAgainOrViewManualInstructions');
-		}
-		else {
-			var info = Components.classes["@mozilla.org/xre/app-info;1"]
-						 .getService(Components.interfaces.nsIXULAppInfo);
-			var browser = info.name; // Returns "Firefox" for Firefox
-			var str = Zotero.getString('general.browserIsOffline', browser);
 		}
 		
 		var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
@@ -422,8 +291,8 @@ Zotero_Preferences.Search = {
 	},
 	
 	
-	updateIndexStats: function () {
-		var stats = Zotero.Fulltext.getIndexStats();
+	updateIndexStats: Zotero.Promise.coroutine(function* () {
+		var stats = yield Zotero.Fulltext.getIndexStats();
 		document.getElementById('fulltext-stats-indexed').
 			lastChild.setAttribute('value', stats.indexed);
 		document.getElementById('fulltext-stats-partial').
@@ -432,15 +301,15 @@ Zotero_Preferences.Search = {
 			lastChild.setAttribute('value', stats.unindexed);
 		document.getElementById('fulltext-stats-words').
 			lastChild.setAttribute('value', stats.words);
-	},
+	}),
 	
 	
-	rebuildIndexPrompt: function () {
+	rebuildIndexPrompt: Zotero.Promise.coroutine(function* () {
 		var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"].
 				createInstance(Components.interfaces.nsIPromptService);
 		var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_IS_STRING)
-			+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_IS_STRING)
-			+ (ps.BUTTON_POS_2) * (ps.BUTTON_TITLE_CANCEL);
+			+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_CANCEL)
+			+ (ps.BUTTON_POS_2) * (ps.BUTTON_TITLE_IS_STRING);
 		
 		var index = ps.confirmEx(null,
 			Zotero.getString('zotero.preferences.search.rebuildIndex'),
@@ -448,26 +317,28 @@ Zotero_Preferences.Search = {
 				Zotero.getString('zotero.preferences.search.indexUnindexed')),
 			buttonFlags,
 			Zotero.getString('zotero.preferences.search.rebuildIndex'),
+			null,
+			// Position 2 because of https://bugzilla.mozilla.org/show_bug.cgi?id=345067
 			Zotero.getString('zotero.preferences.search.indexUnindexed'),
-			null, null, {});
+			null, {});
 		
 		if (index == 0) {
-			Zotero.Fulltext.rebuildIndex();
+			yield Zotero.Fulltext.rebuildIndex();
 		}
-		else if (index == 1) {
-			Zotero.Fulltext.rebuildIndex(true)
+		else if (index == 2) {
+			yield Zotero.Fulltext.rebuildIndex(true)
 		}
 		
-		this.updateIndexStats();
-	},
+		yield this.updateIndexStats();
+	}),
 	
 	
-	clearIndexPrompt: function () {
+	clearIndexPrompt: Zotero.Promise.coroutine(function* () {
 		var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"].
 				createInstance(Components.interfaces.nsIPromptService);
 		var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_IS_STRING)
-			+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_IS_STRING)
-			+ (ps.BUTTON_POS_2) * (ps.BUTTON_TITLE_CANCEL);
+			+ (ps.BUTTON_POS_1) * (ps.BUTTON_TITLE_CANCEL)
+			+ (ps.BUTTON_POS_2) * (ps.BUTTON_TITLE_IS_STRING);
 		
 		var index = ps.confirmEx(null,
 			Zotero.getString('zotero.preferences.search.clearIndex'),
@@ -475,16 +346,17 @@ Zotero_Preferences.Search = {
 				Zotero.getString('zotero.preferences.search.clearNonLinkedURLs')),
 			buttonFlags,
 			Zotero.getString('zotero.preferences.search.clearIndex'),
-			Zotero.getString('zotero.preferences.search.clearNonLinkedURLs'),
-			null, null, {});
+			null,
+			// Position 2 because of https://bugzilla.mozilla.org/show_bug.cgi?id=345067
+			Zotero.getString('zotero.preferences.search.clearNonLinkedURLs'), null, {});
 		
 		if (index == 0) {
-			Zotero.Fulltext.clearIndex();
+			yield Zotero.Fulltext.clearIndex();
 		}
-		else if (index == 1) {
-			Zotero.Fulltext.clearIndex(true);
+		else if (index == 2) {
+			yield Zotero.Fulltext.clearIndex(true);
 		}
 		
-		this.updateIndexStats();
-	}
+		yield this.updateIndexStats();
+	})
 };

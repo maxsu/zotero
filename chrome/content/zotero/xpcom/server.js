@@ -24,7 +24,7 @@
 */
 
 Zotero.Server = new function() {
-	var _onlineObserverRegistered;
+	var _onlineObserverRegistered, serv;
 	this.responseCodes = {
 		200:"OK",
 		201:"Created",
@@ -47,8 +47,13 @@ Zotero.Server = new function() {
 			return;
 		}
 		
+		if(serv) {
+			Zotero.debug("Already listening on port " + serv.port);
+			return;
+		}
+		
 		// start listening on socket
-		var serv = Components.classes["@mozilla.org/network/server-socket;1"]
+		serv = Components.classes["@mozilla.org/network/server-socket;1"]
 					.createInstance(Components.interfaces.nsIServerSocket);
 		try {
 			// bind to a random port on loopback only
@@ -56,12 +61,28 @@ Zotero.Server = new function() {
 			serv.asyncListen(Zotero.Server.SocketListener);
 			
 			Zotero.debug("HTTP server listening on "+(bindAllAddr ? "*": " 127.0.0.1")+":"+serv.port);
+			
+			// Close port on Zotero shutdown (doesn't apply to translation-server)
+			if (Zotero.addShutdownListener) {
+				Zotero.addShutdownListener(this.close.bind(this));
+			}
 		} catch(e) {
+			Zotero.logError(e);
 			Zotero.debug("Not initializing HTTP server");
+			serv = undefined;
 		}
 		
 		_registerOnlineObserver()
 	}
+	
+	/**
+	 * releases bound port
+	 */
+	this.close = function() {
+		if(!serv) return;
+		serv.close();
+		serv = undefined;
+	};
 	
 	/**
 	 * Parses a query string into a key => value object
@@ -70,7 +91,7 @@ Zotero.Server = new function() {
 	this.decodeQueryString = function(queryString) {
 		var splitData = queryString.split("&");
 		var decodedData = {};
-		for each(var variable in splitData) {
+		for (let variable of splitData) {
 			var splitIndex = variable.indexOf("=");
 			decodedData[decodeURIComponent(variable.substr(0, splitIndex))] = decodeURIComponent(variable.substr(splitIndex+1));
 		}
@@ -383,7 +404,10 @@ Zotero.Server.DataListener.prototype._processEndpoint = function(method, postDat
 		}
 		
 		// pass to endpoint
-		if((endpoint.init.length ? endpoint.init.length : endpoint.init.arity) === 3) {
+		if (endpoint.init.length === 2) {
+			endpoint.init(decodedData, sendResponseCallback);
+		}
+		else {
 			const uaRe = /[\r\n]User-Agent: +([^\r\n]+)/i;
 			var m = uaRe.exec(this.header);
 			var url = {
@@ -391,10 +415,7 @@ Zotero.Server.DataListener.prototype._processEndpoint = function(method, postDat
 				"query":this.query ? Zotero.Server.decodeQueryString(this.query.substr(1)) : {},
 				"userAgent":m && m[1]
 			};
-			
 			endpoint.init(url, decodedData, sendResponseCallback);
-		} else {
-			endpoint.init(decodedData, sendResponseCallback);
 		}
 	} catch(e) {
 		Zotero.debug(e);

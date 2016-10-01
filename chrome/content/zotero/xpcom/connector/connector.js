@@ -28,7 +28,11 @@ Zotero.Connector = new function() {
 	const CONNECTOR_API_VERSION = 2;
 	
 	var _ieStandaloneIframeTarget, _ieConnectorCallbacks;
-	this.isOnline = null;
+	// As of Chrome 38 (and corresponding Opera version 24?) pages loaded over
+	// https (i.e. the zotero bookmarklet iframe) can not send requests over
+	// http, so pinging Standalone at http://127.0.0.1 fails.
+	// Disable for all browsers, except IE, which may be used frequently with ZSA
+	this.isOnline = Zotero.isBookmarklet && !Zotero.isIE ? false : null;
 	
 	/**
 	 * Checks if Zotero is online and passes current status to callback
@@ -36,7 +40,10 @@ Zotero.Connector = new function() {
 	 */
 	this.checkIsOnline = function(callback) {
 		// Only check once in bookmarklet
-		if(Zotero.isBookmarklet && this.isOnline !== null) callback(this.isOnline);
+		if(Zotero.isBookmarklet && this.isOnline !== null) {
+			callback(this.isOnline);
+			return;
+		}
 		
 		if(Zotero.isIE) {
 			if(window.location.protocol !== "http:") {
@@ -136,7 +143,7 @@ Zotero.Connector = new function() {
 	 * @param	{Object}		data			RPC data. See documentation above.
 	 * @param	{Function}		callback		Function to be called when requests complete.
 	 */
-	this.callMethod = function(method, data, callback) {
+	this.callMethod = function(method, data, callback, tab) {
 		// Don't bother trying if not online in bookmarklet
 		if(Zotero.isBookmarklet && this.isOnline === false) {
 			callback(false, 0);
@@ -204,6 +211,57 @@ Zotero.Connector = new function() {
 					"X-Zotero-Connector-API-Version":CONNECTOR_API_VERSION
 				});
 		}
+	},
+	
+	/**
+	 * Adds detailed cookies to the data before sending "saveItems" request to
+	 *  the server/Standalone
+	 *
+	 * @param	{Object} data RPC data. See documentation above.
+	 * @param	{Function} callback Function to be called when requests complete.
+	 */
+	this.setCookiesThenSaveItems = function(data, callback, tab) {
+		if(Zotero.isFx && !Zotero.isBookmarklet && data.uri) {
+			var host = Services.io.newURI(data.uri, null, null).host;
+			var cookieEnum = Services.cookies.getCookiesFromHost(host);
+			var cookieHeader = '';
+			while(cookieEnum.hasMoreElements()) {
+				var cookie = cookieEnum.getNext().QueryInterface(Components.interfaces.nsICookie2);
+				cookieHeader += '\n' + cookie.name + '=' + cookie.value
+					+ ';Domain=' + cookie.host
+					+ (cookie.path ? ';Path=' + cookie.path : '')
+					+ (!cookie.isDomain ? ';hostOnly' : '') //not a legit flag, but we have to use it internally
+					+ (cookie.isSecure ? ';secure' : '');
+			}
+			
+			if(cookieHeader) {
+				data.detailedCookies = cookieHeader.substr(1);
+			}
+			
+			this.callMethod("saveItems", data, callback, tab);
+			return;
+		} else if(Zotero.isBrowserExt && !Zotero.isBookmarklet) {
+			var self = this;
+			chrome.cookies.getAll({url: tab.url}, function(cookies) {
+				var cookieHeader = '';
+				for(var i=0, n=cookies.length; i<n; i++) {
+					cookieHeader += '\n' + cookies[i].name + '=' + cookies[i].value
+						+ ';Domain=' + cookies[i].domain
+						+ (cookies[i].path ? ';Path=' + cookies[i].path : '')
+						+ (cookies[i].hostOnly ? ';hostOnly' : '') //not a legit flag, but we have to use it internally
+						+ (cookies[i].secure ? ';secure' : '');
+				}
+				
+				if(cookieHeader) {
+					data.detailedCookies = cookieHeader.substr(1);
+				}
+				
+				self.callMethod("saveItems", data, callback, tab);
+			});
+			return;
+		}
+		
+		this.callMethod("saveItems", data, callback, tab);
 	}
 }
 
@@ -233,25 +291,7 @@ Zotero.Connector_Debug = new function() {
 	 * Submit data to the sserver
 	 */
 	this.submitReport = function(callback) {
-		var uploadCallback = function (xmlhttp) {
-			var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
-									.getService(Components.interfaces.nsIPromptService);
-			
-			if (!xmlhttp.responseXML) {
-				callback(false, 'Invalid response from server');
-				return;
-			}
-			var reported = xmlhttp.responseXML.getElementsByTagName('reported');
-			if (reported.length != 1) {
-				callback(false, 'The server returned an error. Please try again.');
-				return;
-			}
-			
-			var reportID = reported[0].getAttribute('reportID');
-			callback(true, reportID);
-		}
-		
-		Zotero.HTTP.doPost("http://www.zotero.org/repo/report?debug=1", Zotero.Debug.get(),
+		Zotero.HTTP.doPost(ZOTERO_CONFIG.REPOSITORY_URL + "report?debug=1", Zotero.Debug.get(),
 			function(xmlhttp) {
 				if (!xmlhttp.responseXML) {
 					callback(false, 'Invalid response from server');

@@ -39,13 +39,40 @@ var Zotero_Preferences = {
 		
 		if(window.arguments) {
 			var io = window.arguments[0];
+			io = io.wrappedJSObject || io;
 			
 			if(io.pane) {
+				let tabID = io.tab;
+				let tabIndex = io.tabIndex;
 				var pane = document.getElementById(io.pane);
 				document.getElementById('zotero-prefs').showPane(pane);
-				// Quick hack to support install prompt from PDF recognize option
-				if (io.action && io.action == 'pdftools-install') {
-					this.Search.checkPDFToolsDownloadVersion();
+				// Select tab within pane by tab id
+				if (tabID !== undefined) {
+					if (pane.loaded) {
+						let tab = document.querySelector('tab#' + tabID);
+						if (tab) {
+							document.getElementsByTagName('tabbox')[0].selectedTab = tab;
+						}
+					}
+					else {
+						pane.addEventListener('paneload', function () {
+							let tab = document.querySelector('tab#' + tabID);
+							if (tab) {
+								document.getElementsByTagName('tabbox')[0].selectedTab = tab;
+							}
+						})
+					}
+				}
+				// Select tab within pane by index
+				else if (tabIndex !== undefined) {
+					if (pane.loaded) {
+						document.getElementsByTagName('tabbox')[0].selectedIndex = tabIndex;
+					}
+					else {
+						pane.addEventListener('paneload', function () {
+							document.getElementsByTagName('tabbox')[0].selectedIndex = tabIndex;
+						})
+					}
 				}
 			}
 		} else if(document.location.hash == "#cite") {

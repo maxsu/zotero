@@ -34,48 +34,45 @@ function onLoad() {
 	// Set font size from pref
 	Zotero.setFontSize(noteEditor);
 	
-	var params = [];
-	var b = document.location.href.substr(document.location.href.indexOf('?')+1).split('&');
-	for(var i = 0; i < b.length; i++)
-	{
-		var mid = b[i].indexOf('=');
-		
-		params[b[i].substr(0,mid)] = b[i].substr(mid+1);
+	if (window.arguments) {
+		var io = window.arguments[0];
 	}
-	var itemID = params.id;
-	var collectionID = params.coll;
-	var parentItemID = params.p;
+	var itemID = io.itemID;
+	var collectionID = io.collectionID;
+	var parentItemKey = io.parentItemKey;
 	
-	if (itemID) {
-		var ref = Zotero.Items.get(itemID);
-		
-		var clearUndo = noteEditor.item ? noteEditor.item.id != ref.id : false;
-		
-		noteEditor.item = ref;
-		
-		// If loading new or different note, disable undo while we repopulate the text field
-		// so Undo doesn't end up clearing the field. This also ensures that Undo doesn't
-		// undo content from another note into the current one.
-		if (clearUndo) {
-			noteEditor.clearUndo();
-		}
-		
-		document.title = ref.getNoteTitle();
-	}
-	else {
-		if (parentItemID) {
-			var ref = Zotero.Items.get(parentItemID);
-			noteEditor.parent = ref;
+	return Zotero.spawn(function* () {
+		if (itemID) {
+			var ref = yield Zotero.Items.getAsync(itemID);
+			
+			var clearUndo = noteEditor.item ? noteEditor.item.id != ref.id : false;
+			
+			noteEditor.item = ref;
+			
+			// If loading new or different note, disable undo while we repopulate the text field
+			// so Undo doesn't end up clearing the field. This also ensures that Undo doesn't
+			// undo content from another note into the current one.
+			if (clearUndo) {
+				noteEditor.clearUndo();
+			}
+			
+			document.title = ref.getNoteTitle();
 		}
 		else {
-			if (collectionID && collectionID != '' && collectionID != 'undefined') {
-				noteEditor.collection = Zotero.Collections.get(collectionID);
+			if (parentItemKey) {
+				var ref = Zotero.Items.getByLibraryAndKey(parentItemKey);
+				noteEditor.parentItem = ref;
 			}
+			else {
+				if (collectionID && collectionID != '' && collectionID != 'undefined') {
+					noteEditor.collection = Zotero.Collections.get(collectionID);
+				}
+			}
+			noteEditor.refresh();
 		}
-		noteEditor.refresh();
-	}
-	
-	notifierUnregisterID = Zotero.Notifier.registerObserver(NotifyCallback, 'item');
+		
+		notifierUnregisterID = Zotero.Notifier.registerObserver(NotifyCallback, 'item');
+	});
 }
 
 function onUnload()
@@ -88,10 +85,7 @@ function onUnload()
 
 var NotifyCallback = {
 	notify: function(action, type, ids){
-		// DEBUG: why does this reset without checking the modified ids?
-		if (noteEditor.item) {
-			noteEditor.item = noteEditor.item;
-			
+		if (noteEditor.item && ids.indexOf(noteEditor.item.id) != -1) {
 			// If the document title hasn't yet been set, reset undo so
 			// undoing to empty isn't possible
 			var noteTitle = noteEditor.note.getNoteTitle();

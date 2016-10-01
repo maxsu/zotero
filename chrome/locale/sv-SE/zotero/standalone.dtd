@@ -10,7 +10,7 @@
 <!ENTITY quitApplicationCmdMac.key "Q">
 
 
-<!ENTITY fileMenu.label "Fil">
+<!ENTITY fileMenu.label "Arkiv">
 <!ENTITY fileMenu.accesskey "F">
 <!ENTITY saveCmd.label "Spara…">
 <!ENTITY saveCmd.key "S">
@@ -43,7 +43,7 @@
 <!ENTITY copyCmd.label "Kopiera">
 <!ENTITY copyCmd.key "C">
 <!ENTITY copyCmd.accesskey "C">
-<!ENTITY copyCitationCmd.label "Kopiera citering">
+<!ENTITY copyCitationCmd.label "Kopiera referens">
 <!ENTITY copyBibliographyCmd.label "Kopiera källförteckning">
 <!ENTITY pasteCmd.label "Klistra in">
 <!ENTITY pasteCmd.key "V">
@@ -54,7 +54,7 @@
 <!ENTITY selectAllCmd.label "Markera allt">
 <!ENTITY selectAllCmd.key "A">
 <!ENTITY selectAllCmd.accesskey "A">
-<!ENTITY preferencesCmd.label "Alternativ…">
+<!ENTITY preferencesCmd.label "Inställningar">
 <!ENTITY preferencesCmd.accesskey "O">
 <!ENTITY preferencesCmdUnix.label "Inställningar">
 <!ENTITY preferencesCmdUnix.accesskey "n">

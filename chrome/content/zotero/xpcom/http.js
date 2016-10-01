@@ -12,6 +12,7 @@ Zotero.HTTP = new function() {
 	this.UnexpectedStatusException = function(xmlhttp, msg) {
 		this.xmlhttp = xmlhttp;
 		this.status = xmlhttp.status;
+		this.channel = xmlhttp.channel;
 		this.message = msg;
 		
 		// Hide password from debug output
@@ -19,15 +20,26 @@ Zotero.HTTP = new function() {
 		// Password also shows up in channel.name (nsIRequest.name), but that's
 		// read-only and has to be handled in Zotero.varDump()
 		try {
-			if (xmlhttp.channel.URI.password) {
-				xmlhttp.channel.URI.password = "********";
+			if (xmlhttp.channel) {
+				if (xmlhttp.channel.URI.password) {
+					xmlhttp.channel.URI.password = "********";
+				}
+				if (xmlhttp.channel.URI.spec) {
+					xmlhttp.channel.URI.spec = xmlhttp.channel.URI.spec.replace(/key=[^&]+&?/, "key=********");
+				}
 			}
 		}
 		catch (e) {
 			Zotero.debug(e, 1);
 		}
 	};
-	
+	this.UnexpectedStatusException.prototype = Object.create(Error.prototype);
+	this.UnexpectedStatusException.prototype.is4xx = function () {
+		return this.status >= 400 && this.status < 500;
+	}
+	this.UnexpectedStatusException.prototype.is5xx = function () {
+		return this.status >= 500 && this.status < 600;
+	}
 	this.UnexpectedStatusException.prototype.toString = function() {
 		return this.message;
 	};
@@ -39,80 +51,105 @@ Zotero.HTTP = new function() {
 	this.BrowserOfflineException = function() {
 		this.message = "XMLHttpRequest could not complete because the browser is offline";
 	};
+	this.BrowserOfflineException.prototype = Object.create(Error.prototype);
 	this.BrowserOfflineException.prototype.toString = function() {
 		return this.message;
 	};
+
+	this.TimeoutException = function(ms) {
+		this.message = "XMLHttpRequest has timed out after " + ms + "ms";
+	};
+	this.TimeoutException.prototype = Object.create(Error.prototype);
+	this.TimeoutException.prototype.toString = function() {
+		return this.message;
+	};
+
+	this.promise = function () {
+		Zotero.debug("Zotero.HTTP.promise() is deprecated -- use Zotero.HTTP.request()", 2);
+		return this.request.apply(this, arguments);
+	}
 	
 	/**
 	 * Get a promise for a HTTP request
-	 * 
+	 *
 	 * @param {String} method The method of the request ("GET", "POST", "HEAD", or "OPTIONS")
 	 * @param {nsIURI|String}	url				URL to request
 	 * @param {Object} [options] Options for HTTP request:<ul>
 	 *         <li>body - The body of a POST request</li>
+	 *         <li>headers - Object of HTTP headers to send with the request</li>
 	 *         <li>cookieSandbox - The sandbox from which cookies should be taken</li>
 	 *         <li>debug - Log response text and status code</li>
 	 *         <li>dontCache - If set, specifies that the request should not be fulfilled from the cache</li>
 	 *         <li>foreground - Make a foreground request, showing certificate/authentication dialogs if necessary</li>
 	 *         <li>headers - HTTP headers to include in the request</li>
+	 *         <li>logBodyLength - Length of request body to log (defaults to 1024)</li>
+	 *         <li>timeout - Request timeout specified in milliseconds
 	 *         <li>requestObserver - Callback to receive XMLHttpRequest after open()</li>
 	 *         <li>responseType - The type of the response. See XHR 2 documentation for legal values</li>
 	 *         <li>responseCharset - The charset the response should be interpreted as</li>
 	 *         <li>successCodes - HTTP status codes that are considered successful, or FALSE to allow all</li>
 	 *     </ul>
 	 * @param {Zotero.CookieSandbox} [cookieSandbox] Cookie sandbox object
-	 * @return {Promise} A promise resolved with the XMLHttpRequest object if the request
-	 *     succeeds, or rejected if the browser is offline or a non-2XX status response
+	 * @return {Promise<XMLHttpRequest>} A promise resolved with the XMLHttpRequest object if the
+	 *     request succeeds, or rejected if the browser is offline or a non-2XX status response
 	 *     code is received (or a code not in options.successCodes if provided).
 	 */
-	this.promise = function promise(method, url, options) {
+	this.request = Zotero.Promise.coroutine(function* (method, url, options = {}) {
 		if (url instanceof Components.interfaces.nsIURI) {
 			// Don't display password in console
-			var dispURL = url.clone();
-			if (dispURL.password) {
-				dispURL.password = "********";
-			}
+			var dispURL = this.getDisplayURI(url).spec;
 			url = url.spec;
-			dispURL = dispURL.spec;
 		}
 		else {
 			var dispURL = url;
 		}
 		
-		if(options && options.body) {
-			var bodyStart = options.body.substr(0, 1024);
+		// Don't display API key in console
+		dispURL = dispURL.replace(/key=[^&]+&?/, "").replace(/\?$/, "");
+		
+		if (options.body && typeof options.body == 'string') {
+			let len = options.logBodyLength !== undefined ? options.logBodyLength : 1024;
+			var bodyStart = options.body.substr(0, len);
 			// Don't display sync password or session id in console
+			bodyStart = bodyStart.replace(/password":"[^"]+/, 'password":"********');
 			bodyStart = bodyStart.replace(/password=[^&]+/, 'password=********');
 			bodyStart = bodyStart.replace(/sessionid=[^&]+/, 'sessionid=********');
 			
-			Zotero.debug("HTTP "+method+" "
-				+ (options.body.length > 1024 ?
-					bodyStart + '... (' + options.body.length + ' chars)' : bodyStart)
+			Zotero.debug("HTTP " + method + ' "'
+				+ (options.body.length > len
+					? bodyStart + '\u2026" (' + options.body.length + ' chars)' : bodyStart + '"')
 				+ " to " + dispURL);
 		} else {
 			Zotero.debug("HTTP " + method + " " + dispURL);
 		}
 		
-		if (this.browserIsOffline()) {
-			return Q.fcall(function() {
-				Zotero.debug("HTTP " + method + " " + dispURL + " failed: "
-					+ "Browser is offline");
-				throw new this.BrowserOfflineException();
-			});
+		if (url.startsWith('http') && this.browserIsOffline()) {
+			Zotero.debug("HTTP " + method + " " + dispURL + " failed: Browser is offline");
+			throw new this.BrowserOfflineException();
 		}
 		
-		var deferred = Q.defer();
+		var deferred = Zotero.Promise.defer();
 		
-		var xmlhttp = Components.classes["@mozilla.org/xmlextras/xmlhttprequest;1"]
-					.createInstance();
+		if (!this.mock) {
+			var xmlhttp = Components.classes["@mozilla.org/xmlextras/xmlhttprequest;1"]
+				.createInstance();
+		}
+		else {
+			var xmlhttp = new this.mock;
+			// Add a dummy overrideMimeType() if it's not mocked
+			// https://github.com/cjohansen/Sinon.JS/issues/559
+			if (!xmlhttp.overrideMimeType) {
+				xmlhttp.overrideMimeType = function () {};
+			}
+		}
 		// Prevent certificate/authentication dialogs from popping up
-		if (!options || !options.foreground) {
+		if (!options.foreground) {
 			xmlhttp.mozBackgroundRequest = true;
 		}
 		xmlhttp.open(method, url, true);
 		
 		// Pass the request to a callback
-		if (options && options.requestObserver) {
+		if (options.requestObserver) {
 			options.requestObserver(xmlhttp);
 		}
 		
@@ -130,38 +167,76 @@ Zotero.HTTP = new function() {
 			channel.forceAllowThirdPartyCookie = true;
 			
 			// Set charset
-			if (options && options.responseCharset) {
+			if (options.responseCharset) {
 				channel.contentCharset = responseCharset;
 			}
 			
 			// Disable caching if requested
-			if(options && options.dontCache) {
+			if (options.dontCache) {
 				channel.loadFlags |= Components.interfaces.nsIRequest.LOAD_BYPASS_CACHE;
 			}
 		}
 
 		// Set responseType
-		if(options && options.responseType) {
+		if (options.responseType) {
 			xmlhttp.responseType = options.responseType;
 		}
 		
 		// Send headers
-		var headers = (options && options.headers) || {};
-		if (options && options.body && !headers["Content-Type"]) {
-			headers["Content-Type"] = "application/x-www-form-urlencoded";
+		var headers = {};
+		if (options && options.headers) {
+			Object.assign(headers, options.headers);
+		}
+		var compressedBody = false;
+		if (options.body) {
+			if (!headers["Content-Type"]) {
+				headers["Content-Type"] = "application/x-www-form-urlencoded";
+			}
+			
+			if (options.compressBody && this.isWriteMethod(method)) {
+				headers['Content-Encoding'] = 'gzip';
+				compressedBody = yield Zotero.Utilities.Internal.gzip(options.body);
+				
+				let oldLen = options.body.length;
+				let newLen = compressedBody.length;
+				Zotero.debug(`${method} body gzipped from ${oldLen} to ${newLen}; `
+					+ Math.round(((oldLen - newLen) / oldLen) * 100) + "% savings");
+			}
+		}
+		if (options.debug) {
+			if (headers["Zotero-API-Key"]) {
+				let dispHeaders = {};
+				Object.assign(dispHeaders, headers);
+				if (dispHeaders["Zotero-API-Key"]) {
+					dispHeaders["Zotero-API-Key"] = "[Not shown]";
+				}
+				Zotero.debug(dispHeaders);
+			}
+			else {
+				Zotero.debug(headers);
+			}
 		}
 		for (var header in headers) {
 			xmlhttp.setRequestHeader(header, headers[header]);
 		}
-		
+
+		// Set timeout
+		if (options.timeout) {
+			xmlhttp.timeout = options.timeout;
+		}
+
+		xmlhttp.ontimeout = function() {
+			deferred.reject(new Zotero.HTTP.TimeoutException(options.timeout));
+		};
+
 		xmlhttp.onloadend = function() {
 			var status = xmlhttp.status;
 			
-			if (options && options.successCodes) {
+			if (options.successCodes) {
 				var success = options.successCodes.indexOf(status) != -1;
 			}
 			// Explicit FALSE means allow any status code
-			else if (options && options.successCodes === false) {
+			else if (options.successCodes === false) {
 				var success = true;
 			}
 			else if(isFile) {
@@ -172,31 +247,42 @@ Zotero.HTTP = new function() {
 			}
 			
 			if(success) {
-				if (options && options.debug) {
-					Zotero.debug("HTTP " + method + " " + dispURL
-						+ " succeeded with " + xmlhttp.status);
+				Zotero.debug("HTTP " + method + " " + dispURL
+					+ " succeeded with " + xmlhttp.status);
+				if (options.debug) {
 					Zotero.debug(xmlhttp.responseText);
 				}
 				deferred.resolve(xmlhttp);
 			} else {
-				var msg = "HTTP " + method + " " + dispURL + " failed: "
-					+ "Unexpected status code " + xmlhttp.status;
-				Zotero.debug(msg, 1);
-				if (options && options.debug) {
-					Zotero.debug(xmlhttp.responseText);
+				let msg = "HTTP " + method + " " + dispURL + " failed with status code " + xmlhttp.status;
+				if (xmlhttp.status == 400 || options.debug) {
+					msg += ":\n\n" + xmlhttp.responseText;
 				}
+				Zotero.debug(msg, 1);
 				deferred.reject(new Zotero.HTTP.UnexpectedStatusException(xmlhttp, msg));
 			}
 		};
 		
-		if(options && options.cookieSandbox) {
+		if (options.cookieSandbox) {
 			options.cookieSandbox.attachToInterfaceRequestor(xmlhttp);
 		}
 		
-		xmlhttp.send((options && options.body) || null);
+		// Send binary data
+		if (compressedBody) {
+			let numBytes = compressedBody.length;
+			let ui8Data = new Uint8Array(numBytes);
+			for (let i = 0; i < numBytes; i++) {
+				ui8Data[i] = compressedBody.charCodeAt(i) & 0xff;
+			}
+			xmlhttp.send(ui8Data);
+		}
+		// Send regular request
+		else {
+			xmlhttp.send(options.body || null);
+		}
 		
 		return deferred.promise;
-	};
+	});
 	
 	/**
 	 * Send an HTTP GET request via XMLHTTPRequest
@@ -205,17 +291,15 @@ Zotero.HTTP = new function() {
 	 * @param {Function} 		onDone			Callback to be executed upon request completion
 	 * @param {String} 		responseCharset	Character set to force on the response
 	 * @param {Zotero.CookieSandbox} [cookieSandbox] Cookie sandbox object
+	 * @param {Object} requestHeaders HTTP headers to include with request
 	 * @return {XMLHttpRequest} The XMLHttpRequest object if the request was sent, or
 	 *     false if the browser is offline
-	 * @deprecated Use {@link Zotero.HTTP.promise}
+	 * @deprecated Use {@link Zotero.HTTP.request}
 	 */
-	this.doGet = function(url, onDone, responseCharset, cookieSandbox) {
+	this.doGet = function(url, onDone, responseCharset, cookieSandbox, requestHeaders) {
 		if (url instanceof Components.interfaces.nsIURI) {
 			// Don't display password in console
-			var disp = url.clone();
-			if (disp.password) {
-				disp.password = "********";
-			}
+			var disp = this.getDisplayURI(url);
 			Zotero.debug("HTTP GET " + disp.spec);
 			url = url.spec;
 		}
@@ -241,6 +325,13 @@ Zotero.HTTP = new function() {
 		// Set charset
 		if (responseCharset) {
 			channel.contentCharset = responseCharset;
+		}
+		
+		// Set request headers
+		if (requestHeaders) {
+			for (var header in requestHeaders) {
+				xmlhttp.setRequestHeader(header, requestHeaders[header]);
+			}
 		}
 	
 		// Don't cache GET requests
@@ -271,15 +362,12 @@ Zotero.HTTP = new function() {
 	 * @param {Zotero.CookieSandbox} [cookieSandbox] Cookie sandbox object
 	 * @return {XMLHttpRequest} The XMLHttpRequest object if the request was sent, or
 	 *     false if the browser is offline
-	 * @deprecated Use {@link Zotero.HTTP.promise}
+	 * @deprecated Use {@link Zotero.HTTP.request}
 	 */
 	this.doPost = function(url, body, onDone, headers, responseCharset, cookieSandbox) {
 		if (url instanceof Components.interfaces.nsIURI) {
 			// Don't display password in console
-			var disp = url.clone();
-			if (disp.password) {
-				disp.password = "********";
-			}
+			var disp = this.getDisplayURI(url);
 			url = url.spec;
 		}
 		
@@ -358,15 +446,12 @@ Zotero.HTTP = new function() {
 	 * @param {Zotero.CookieSandbox} [cookieSandbox] Cookie sandbox object
 	 * @return {XMLHttpRequest} The XMLHttpRequest object if the request was sent, or
 	 *     false if the browser is offline
-	 * @deprecated Use {@link Zotero.HTTP.promise}
+	 * @deprecated Use {@link Zotero.HTTP.request}
 	 */
 	this.doHead = function(url, onDone, requestHeaders, cookieSandbox) {
 		if (url instanceof Components.interfaces.nsIURI) {
 			// Don't display password in console
-			var disp = url.clone();
-			if (disp.password) {
-				disp.password = "********";
-			}
+			var disp = this.getDisplayURI(url);
 			Zotero.debug("HTTP HEAD " + disp.spec);
 			url = url.spec;
 		}
@@ -420,14 +505,11 @@ Zotero.HTTP = new function() {
 	 * @param	{nsIURI}		url
 	 * @param	{Function}	onDone
 	 * @return	{XMLHTTPRequest}
-	 * @deprecated Use {@link Zotero.HTTP.promise}
+	 * @deprecated Use {@link Zotero.HTTP.request}
 	 */
 	this.doOptions = function (uri, callback) {
 		// Don't display password in console
-		var disp = uri.clone();
-		if (disp.password) {
-			disp.password = "********";
-		}
+		var disp = this.getDisplayURI(uri);
 		Zotero.debug("HTTP OPTIONS for " + disp.spec);
 		
 		if (Zotero.HTTP.browserIsOffline()){
@@ -466,36 +548,123 @@ Zotero.HTTP = new function() {
 		if (!Zotero.isStandalone
 				|| !Zotero.Prefs.get("triggerProxyAuthentication")
 				|| Zotero.HTTP.browserIsOffline()) {
-			Zotero.proxyAuthComplete = Q();
+			Zotero.proxyAuthComplete = Zotero.Promise.resolve();
 			return false;
 		}
 		
-		var deferred = Q.defer();
+		var deferred = Zotero.Promise.defer();
 		Zotero.proxyAuthComplete = deferred.promise;
 		
-		var uri = ZOTERO_CONFIG.PROXY_AUTH_URL;
-		
-		Zotero.debug("HTTP GET " + uri);
-		
-		var xmlhttp = Components.classes["@mozilla.org/xmlextras/xmlhttprequest;1"]
-					.createInstance();
-		xmlhttp.open("GET", uri, true);
-		
-		xmlhttp.channel.loadFlags |= Components.interfaces.nsIRequest.LOAD_BYPASS_CACHE;
-		
-		var useMethodjit = Components.utils.methodjit;
-		/** @ignore */
-		xmlhttp.onreadystatechange = function() {
-			// XXX Remove when we drop support for Fx <24
-			if(useMethodjit !== undefined) Components.utils.methodjit = useMethodjit;
-			_stateChange(xmlhttp, function (xmlhttp) {
-				Zotero.debug("Proxy auth request completed with status "
-					+ xmlhttp.status + ": " + xmlhttp.responseText);
+		Zotero.Promise.try(function () {
+			var uris = Zotero.Prefs.get('proxyAuthenticationURLs').split(',');
+			uris = Zotero.Utilities.arrayShuffle(uris);
+			uris.unshift(ZOTERO_CONFIG.PROXY_AUTH_URL);
+			
+			return Zotero.spawn(function* () {
+				let max = 3; // how many URIs to try after the general Zotero one
+				for (let i = 0; i <= max; i++) {
+					let uri = uris.shift();
+					if (!uri) {
+						break;
+					}
+					
+					// For non-Zotero URLs, wait for PAC initialization,
+					// in a rather ugly and inefficient manner
+					if (i == 1) {
+						let installed = yield Zotero.Promise.try(_pacInstalled)
+						.then(function (installed) {
+							if (installed) throw true;
+						})
+						.delay(500)
+						.then(_pacInstalled)
+						.then(function (installed) {
+							if (installed) throw true;
+						})
+						.delay(1000)
+						.then(_pacInstalled)
+						.then(function (installed) {
+							if (installed) throw true;
+						})
+						.delay(2000)
+						.then(_pacInstalled)
+						.catch(function () {
+							return true;
+						});
+						if (!installed) {
+							Zotero.debug("No general proxy or PAC file found -- assuming direct connection");
+							break;
+						}
+					}
+					
+					let proxyInfo = yield _proxyAsyncResolve(uri);
+					if (proxyInfo) {
+						Zotero.debug("Proxy required for " + uri + " -- making HEAD request to trigger auth prompt");
+						yield Zotero.HTTP.promise("HEAD", uri, {
+							foreground: true,
+							dontCache: true
+						})
+						.catch(function (e) {
+							Components.utils.reportError(e);
+							var msg = "Error connecting to proxy -- proxied requests may not work";
+							Zotero.log(msg, 'error');
+							Zotero.debug(msg, 1);
+						});
+						break;
+					}
+					else {
+						Zotero.debug("Proxy not required for " + uri);
+					}
+				}
 				deferred.resolve();
 			});
-		};
-		xmlhttp.send(null);
-		return xmlhttp;
+		})
+		.catch(function (e) {
+			Components.utils.reportError(e);
+			Zotero.debug(e, 1);
+			deferred.resolve();
+		});
+	}
+	
+	
+	/**
+	 * Test if a PAC file is installed
+	 *
+	 * There might be a better way to do this that doesn't require stepping
+	 * through the error log and doing a fragile string comparison.
+	 */
+	_pacInstalled = function () {
+		return Zotero.getErrors(true).some(function (val) val.indexOf("PAC file installed") == 0)
+	}
+	
+	
+	_proxyAsyncResolve = function (uri) {
+		Components.utils.import("resource://gre/modules/NetUtil.jsm");
+		var pps = Components.classes["@mozilla.org/network/protocol-proxy-service;1"]
+			.getService(Components.interfaces.nsIProtocolProxyService);
+		var deferred = Zotero.Promise.defer();
+		pps.asyncResolve(
+			NetUtil.newURI(uri),
+			0,
+			{
+				onProxyAvailable: function (req, uri, proxyInfo, status) {
+					//Zotero.debug("onProxyAvailable");
+					//Zotero.debug(status);
+					deferred.resolve(proxyInfo);
+				},
+				
+				QueryInterface: function (iid) {
+					const interfaces = [
+						Components.interfaces.nsIProtocolProxyCallback,
+						Components.interfaces.nsISupports
+					];
+					if (!interfaces.some(function(v) { return iid.equals(v) })) {
+						throw Components.results.NS_ERROR_NO_INTERFACE;
+					}
+					return this;
+				},
+			}
+		);
+		return deferred.promise;
 	}
 	
 	
@@ -506,77 +675,6 @@ Zotero.HTTP = new function() {
 	this.WebDAV = {};
 	
 	/**
-	* Send a WebDAV PROP* request via XMLHTTPRequest
-	*
-	* Returns false if browser is offline
-	*
-	* @param		{String}		method			PROPFIND or PROPPATCH
-	* @param		{nsIURI}		uri
-	* @param		{String}		body				XML string
-	* @param		{Function}	callback
-	* @param		{Object}		requestHeaders	e.g. { Depth: 0 }
-	*/
-	this.WebDAV.doProp = function (method, uri, body, callback, requestHeaders) {
-		switch (method) {
-			case 'PROPFIND':
-			case 'PROPPATCH':
-				break;
-			
-			default:
-				throw ("Invalid method '" + method
-					+ "' in Zotero.HTTP.doProp");
-		}
-		
-		if (requestHeaders && requestHeaders.depth != undefined) {
-			var depth = requestHeaders.depth;
-		}
-		
-		// Don't display password in console
-		var disp = uri.clone();
-		if (disp.password) {
-			disp.password = "********";
-		}
-		
-		var bodyStart = body.substr(0, 1024);
-		Zotero.debug("HTTP " + method + " "
-			+ (depth != undefined ? "(depth " + depth + ") " : "")
-			+ (body.length > 1024 ?
-				bodyStart + "... (" + body.length + " chars)" : bodyStart)
-			+ " to " + disp.spec);
-		
-		if (Zotero.HTTP.browserIsOffline()) {
-			Zotero.debug("Browser is offline", 2);
-			return false;
-		}
-		
-		var xmlhttp = Components.classes["@mozilla.org/xmlextras/xmlhttprequest;1"]
-						.createInstance();
-		// Prevent certificate/authentication dialogs from popping up
-		xmlhttp.mozBackgroundRequest = true;
-		xmlhttp.open(method, uri.spec, true);
-		
-		if (requestHeaders) {
-			for (var header in requestHeaders) {
-				xmlhttp.setRequestHeader(header, requestHeaders[header]);
-			}
-		}
-		
-		xmlhttp.setRequestHeader("Content-Type", 'text/xml; charset="utf-8"');
-		
-		var useMethodjit = Components.utils.methodjit;
-		/** @ignore */
-		xmlhttp.onreadystatechange = function() {
-			// XXX Remove when we drop support for Fx <24
-			if(useMethodjit !== undefined) Components.utils.methodjit = useMethodjit;
-			_stateChange(xmlhttp, callback);
-		};
-		
-		xmlhttp.send(body);
-		return xmlhttp;
-	}
-	
-	
-	/**
 	 * Send a WebDAV MKCOL request via XMLHTTPRequest
 	 *
 	 * @param	{nsIURI}		url
@@ -585,10 +683,7 @@ Zotero.HTTP = new function() {
 	 */
 	this.WebDAV.doMkCol = function (uri, callback) {
 		// Don't display password in console
-		var disp = uri.clone();
-		if (disp.password) {
-			disp.password = "********";
-		}
+		var disp = Zotero.HTTP.getDisplayURI(uri);
 		Zotero.debug("HTTP MKCOL " + disp.spec);
 		
 		if (Zotero.HTTP.browserIsOffline()) {
@@ -616,61 +711,12 @@ Zotero.HTTP = new function() {
 	 * Send a WebDAV PUT request via XMLHTTPRequest
 	 *
 	 * @param	{nsIURI}		url
-	 * @param	{String}		body			String body to PUT
-	 * @param	{Function}	onDone
-	 * @return	{XMLHTTPRequest}
-	 */
-	this.WebDAV.doPut = function (uri, body, callback) {
-		// Don't display password in console
-		var disp = uri.clone();
-		if (disp.password) {
-			disp.password = "********";
-		}
-		
-		var bodyStart = "'" + body.substr(0, 1024) + "'";
-		Zotero.debug("HTTP PUT "
-			+ (body.length > 1024 ?
-				bodyStart + "... (" + body.length + " chars)" : bodyStart)
-			+ " to " + disp.spec);
-		
-		if (Zotero.HTTP.browserIsOffline()) {
-			return false;
-		}
-		
-		var xmlhttp = Components.classes["@mozilla.org/xmlextras/xmlhttprequest;1"]
-					.createInstance();
-		// Prevent certificate/authentication dialogs from popping up
-		xmlhttp.mozBackgroundRequest = true;
-		xmlhttp.open("PUT", uri.spec, true);
-		// Some servers (e.g., Jungle Disk DAV) return a 200 response code
-		// with Content-Length: 0, which triggers a "no element found" error
-		// in Firefox, so we override to text
-		xmlhttp.overrideMimeType("text/plain");
-		var useMethodjit = Components.utils.methodjit;
-		/** @ignore */
-		xmlhttp.onreadystatechange = function() {
-			// XXX Remove when we drop support for Fx <24
-			if(useMethodjit !== undefined) Components.utils.methodjit = useMethodjit;
-			_stateChange(xmlhttp, callback);
-		};
-		xmlhttp.send(body);
-		return xmlhttp;
-	}
-	
-	
-	/**
-	 * Send a WebDAV PUT request via XMLHTTPRequest
-	 *
-	 * @param	{nsIURI}		url
 	 * @param	{Function}	onDone
 	 * @return	{XMLHTTPRequest}
 	 */
 	this.WebDAV.doDelete = function (uri, callback) {
 		// Don't display password in console
-		var disp = uri.clone();
-		if (disp.password) {
-			disp.password = "********";
-		}
+		var disp = Zotero.HTTP.getDisplayURI(uri);
 		
 		Zotero.debug("WebDAV DELETE to " + disp.spec);
 		
@@ -695,6 +741,20 @@ Zotero.HTTP = new function() {
 		};
 		xmlhttp.send(null);
 		return xmlhttp;
+	}
+	
+	
+	this.isWriteMethod = function (method) {
+		return method == 'POST' || method == 'PUT' || method == 'PATCH' || method == 'DELETE';
+	};
+	
+	
+	this.getDisplayURI = function (uri) {
+		var disp = uri.clone();
+		if (disp.password) {
+			disp.password = "********";
+		}
+		return disp;
 	}
 	
 	
@@ -738,7 +798,8 @@ Zotero.HTTP = new function() {
 	 * Load one or more documents in a hidden browser
 	 *
 	 * @param {String|String[]} urls URL(s) of documents to load
-	 * @param {Function} processor Callback to be executed for each document loaded
+	 * @param {Function} processor - Callback to be executed for each document loaded; if function returns
+	 *     a promise, it's waited for before continuing
 	 * @param {Function} done Callback to be executed after all documents have been loaded
 	 * @param {Function} exception Callback to be executed if an exception occurs
 	 * @param {Boolean} dontDelete Don't delete the hidden browser upon completion; calling function
@@ -801,16 +862,40 @@ Zotero.HTTP = new function() {
 			hiddenBrowser.removeEventListener("pageshow", onLoad, true);
 			hiddenBrowser.zotero_loaded = true;
 			
+			var maybePromise;
+			var error;
 			try {
-				processor(doc);
-			} catch(e) {
-				if(exception) {
-					exception(e);
-					return;
-				} else {
-					throw(e);
+				maybePromise = processor(doc);
+			}
+			catch (e) {
+				error = e;
+			}
+			
+			// If processor returns a promise, wait for it
+			if (maybePromise && maybePromise.then) {
+				maybePromise.then(() => doLoad())
+				.catch(e => {
+					if (exception) {
+						exception(e);
+					}
+					else {
+						throw e;
+					}
+				});
+				return;
+			}
+			
+			try {
+				if (error) {
+					if (exception) {
+						exception(error);
+					}
+					else {
+						throw error;
+					}
 				}
-			} finally {
+			}
+			finally {
 				doLoad();
 			}
 		};
@@ -922,17 +1007,11 @@ Zotero.HTTP = new function() {
 	 	if(typeof url !== "object") {
 	 		url = Services.io.newURI(url, null, null).QueryInterface(Components.interfaces.nsIURL);
 		}
-
-		var parser = Components.classes["@mozilla.org/xmlextras/domparser;1"]
-             .createInstance(Components.interfaces.nsIDOMParser);
-		var secMan = Components.classes["@mozilla.org/scriptsecuritymanager;1"]
-			.getService(Components.interfaces.nsIScriptSecurityManager);
-		parser.init(secMan.getCodebasePrincipal(url), url, url);
 		return Zotero.Translate.DOMWrapper.wrap(doc, {
-			"documentURI":{ "enumerable":true, "value":url.spec },
-			"URL":{ "enumerable":true, "value":url.spec },
-			"location":{ "enumerable":true, "value":(new Zotero.HTTP.Location(url)) },
-			"defaultView":{ "enumerable":true, "value":(new Zotero.HTTP.Window(url)) }
+			"documentURI":url.spec,
+			"URL":url.spec,
+			"location":new Zotero.HTTP.Location(url),
+			"defaultView":new Zotero.HTTP.Window(url)
 		});
 	 }
 }

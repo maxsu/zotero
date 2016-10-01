@@ -55,34 +55,59 @@ Zotero.Repo = new function() {
 	/**
 	 * Get translator code from repository
 	 * @param {String} translatorID ID of the translator to retrieve code for
-	 * @param {Function} callback Callback to pass code when retreived
 	 */
-	this.getTranslatorCode = function(translatorID, callback) {
+	this.getTranslatorCode = Zotero.Promise.method(function (translatorID, debugMode) {
+		var deferred = Zotero.Promise.defer();
+		
 		// try standalone
 		Zotero.Connector.callMethod("getTranslatorCode", {"translatorID":translatorID}, function(result) {
 			if(result) {
-				_haveCode(result, translatorID, Zotero.Repo.SOURCE_ZOTERO_STANDALONE, callback);
+				deferred.resolve(
+					Zotero.Promise.all(
+						[
+							_haveCode(result, translatorID),
+							Zotero.Repo.SOURCE_ZOTERO_STANDALONE
+						]
+					)
+				);
+				return;
+			}
+			// Don't fetch from repo in debug mode
+			if (debugMode) {
+				deferred.resolve([false, Zotero.Repo.SOURCE_ZOTERO_STANDALONE]);
 				return;
 			}
 			
+			
 			// then try repo
-			Zotero.HTTP.doGet(ZOTERO_CONFIG.REPOSITORY_URL+"/code/"+translatorID+"?version="+Zotero.version,
+			Zotero.HTTP.doGet(
+				ZOTERO_CONFIG.REPOSITORY_URL + "code/" + translatorID + "?version=" + Zotero.version,
 				function(xmlhttp) {
-					_haveCode(xmlhttp.status === 200 ? xmlhttp.responseText : false, translatorID,
-						Zotero.Repo.SOURCE_REPO, callback);
+					deferred.resolve(
+						Zotero.Promise.all(
+							[
+								_haveCode(
+									xmlhttp.status === 200 ? xmlhttp.responseText : false,
+									translatorID
+								),
+								Zotero.Repo.SOURCE_REPO
+							]
+						)
+					);
 				}
 			);
 		});
-	};
+		
+		return deferred.promise;
+	});
 	
 	/**
 	 * Called when code has been retrieved from standalone or repo
 	 */
-	function _haveCode(code, translatorID, source, callback) {
+	function _haveCode(code, translatorID) {
 		if(!code) {
 			Zotero.logError(new Error("Code could not be retrieved for " + translatorID));
-			callback(false);
-			return;
+			return false;
 		}
 		
 		if(!Zotero.isFx) {
@@ -91,16 +116,14 @@ Zotero.Repo = new function() {
 			var m = infoRe.exec(code);
 			if (!m) {
 				Zotero.logError(new Error("Invalid or missing translator metadata JSON object for " + translatorID));
-				callback(false);
-				return;
+				return false;
 			}
 			
 			try {
 				var metadata = JSON.parse(m[0]);
 			} catch(e) {
 				Zotero.logError(new Error("Invalid or missing translator metadata JSON object for " + translatorID));
-				callback(false);
-				return;
+				return false;
 			}
 			
 			var translator = Zotero.Translators.getWithoutCode(translatorID);
@@ -114,7 +137,7 @@ Zotero.Repo = new function() {
 				}
 			}
 		}
-		callback(code, source);
+		return code;
 	}
 	
 	/**
@@ -137,7 +160,7 @@ Zotero.Repo = new function() {
 	 * Retrieve metadata from repository
 	 */
 	function _updateFromRepo(reset, callback) {
-		var url = ZOTERO_CONFIG.REPOSITORY_URL+"/metadata?version="+Zotero.version+"&last="+
+		var url = ZOTERO_CONFIG.REPOSITORY_URL + "metadata?version=" + Zotero.version + "&last="+
 				(reset ? "0" : Zotero.Prefs.get("connector.repo.lastCheck.repoTime"));
 		
 		Zotero.HTTP.doGet(url, function(xmlhttp) {

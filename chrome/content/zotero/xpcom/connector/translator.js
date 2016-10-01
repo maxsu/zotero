@@ -24,7 +24,7 @@
 */
 
 // Enumeration of types of translators
-const TRANSLATOR_TYPES = {"import":1, "export":2, "web":4, "search":8};
+var TRANSLATOR_TYPES = {"import":1, "export":2, "web":4, "search":8};
 
 /**
  * Singleton to handle loading and caching of translators
@@ -42,7 +42,7 @@ Zotero.Translators = new function() {
 	this.init = function(translators) {
 		if(!translators) {
 			translators = [];
-			if((Zotero.isChrome || Zotero.isSafari) && localStorage["translatorMetadata"]) {
+			if((Zotero.isBrowserExt || Zotero.isSafari) && localStorage["translatorMetadata"]) {
 				try {
 					translators = JSON.parse(localStorage["translatorMetadata"]);
 					if(typeof translators !== "object") {
@@ -92,9 +92,6 @@ Zotero.Translators = new function() {
 	/**
 	 * Gets the translator that corresponds to a given ID, without attempting to retrieve code
 	 * @param {String} id The ID of the translator
-	 * @param {Function} [callback] An optional callback to be executed when translators have been
-	 *                              retrieved. If no callback is specified, translators are
-	 *                              returned.
 	 */
 	this.getWithoutCode = function(id) {
 		if(!_initialized) Zotero.Translators.init();
@@ -103,54 +100,48 @@ Zotero.Translators = new function() {
 	
 	/**
 	 * Gets the translator that corresponds to a given ID
+	 *
 	 * @param {String} id The ID of the translator
-	 * @param {Function} [callback] An optional callback to be executed when translators have been
-	 *                              retrieved. If no callback is specified, translators are
-	 *                              returned.
 	 */
-	this.get = function(id, callback) {
+	this.get = Zotero.Promise.method(function (id) {
 		if(!_initialized) Zotero.Translators.init();
 		var translator = _translators[id];
 		if(!translator) {
-			callback(false);
 			return false;
 		}
 		
 		// only need to get code if it is of some use
 		if(translator.runMode === Zotero.Translator.RUN_MODE_IN_BROWSER
 				&& !translator.hasOwnProperty("code")) {
-			translator.getCode(function() { callback(translator) });
+			return translator.getCode().then(() => translator);
 		} else {
-			callback(translator);
+			return translator;
 		}
-	}
+	});
 	
 	/**
 	 * Gets all translators for a specific type of translation
 	 * @param {String} type The type of translators to get (import, export, web, or search)
-	 * @param {Function} callback A required callback to be executed when translators have been
-	 *                            retrieved.
 	 * @param {Boolean} [debugMode] Whether to assume debugging mode. If true, code is included for 
 	 *                              unsupported translators, and code originally retrieved from the
 	 *                              repo is re-retrieved from Zotero Standalone.
 	 */
-	this.getAllForType = function(type, callback, debugMode) {
+	this.getAllForType = Zotero.Promise.method(function (type, debugMode) {
 		if(!_initialized) Zotero.Translators.init()
 		var translators = _cache[type].slice(0);
-		new Zotero.Translators.CodeGetter(translators, callback, translators, debugMode);
-		return true;
-	}
+		var codeGetter = new Zotero.Translators.CodeGetter(translators, debugMode);
+		return codeGetter.getAll().then(function() {
+			return translators;
+		});;
+	});
 	
 	/**
 	 * Gets web translators for a specific location
 	 * @param {String} uri The URI for which to look for translators
-	 * @param {Function} [callback] An optional callback to be executed when translators have been
-	 *                              retrieved. If no callback is specified, translators are
-	 *                              returned. The callback is passed a set of functions for
-	 *                              converting URLs from proper to proxied forms as the second
-	 *                              argument.
+	 * @return {Promise<Array[]>} - A promise for a 2-item array containing an array of translators and
+	 *     an array of functions for converting URLs from proper to proxied forms
 	 */
-	this.getWebTranslatorsForLocation = function(uri, callback) {
+	this.getWebTranslatorsForLocation = Zotero.Promise.method(function (uri) {
 		if(!_initialized) Zotero.Translators.init();
 		var allTranslators = _cache["web"];
 		var potentialTranslators = [];
@@ -196,14 +187,14 @@ Zotero.Translators = new function() {
 					
 					if(j === 0) {
 						converterFunctions.push(null);
-					} else if(Zotero.isChrome || Zotero.isSafari) {
+					} else if(Zotero.isBrowserExt || Zotero.isSafari) {
 						// in Chrome/Safari, the converterFunction needs to be passed as JSON, so
 						// just push an array with the proper and proxyHosts
 						converterFunctions.push([properHosts[j-1], proxyHosts[j-1]]);
 					} else {
 						// in Firefox, push the converterFunction
 						converterFunctions.push(new function() {
-							var re = new RegExp('^https?://(?:[^/]\\.)?'+Zotero.Utilities.quotemeta(properHosts[j-1]), "gi");
+							var re = new RegExp('^https?://(?:[^/]\\.)?'+Zotero.Utilities.quotemeta(properHosts[j-1])+'(?=/)', "gi");
 							var proxyHost = proxyHosts[j-1].replace(/\$/g, "$$$$");
 							return function(uri) { return uri.replace(re, "$&."+proxyHost) };
 						});
@@ -215,10 +206,11 @@ Zotero.Translators = new function() {
 			}
 		}
 		
-		new Zotero.Translators.CodeGetter(potentialTranslators, callback,
-				[potentialTranslators, converterFunctions]);
-		return true;
-	}
+		var codeGetter = new Zotero.Translators.CodeGetter(potentialTranslators);
+		return codeGetter.getAll().then(function () {
+			return [potentialTranslators, converterFunctions];
+		});
+	});
 	
 	/**
 	 * Converts translators to JSON-serializable objects
@@ -303,7 +295,7 @@ Zotero.Translators = new function() {
 		}
 		
 		// Store
-		if(Zotero.isChrome || Zotero.isSafari) {
+		if (Zotero.isBrowserExt || Zotero.isSafari) {
 			var serialized = JSON.stringify(serializedTranslators);
 			localStorage["translatorMetadata"] = serialized;
 			Zotero.debug("Translators: Saved updated translator list ("+serialized.length+" characters)");
@@ -331,50 +323,46 @@ Zotero.Translators = new function() {
  * A class to get the code for a set of translators at once
  *
  * @param {Zotero.Translator[]} translators Translators for which to retrieve code
- * @param {Function} callback Callback to call once code has been retrieved
- * @param {Function} callbackArgs All arguments to be passed to callback (including translators)
  * @param {Boolean} [debugMode] If true, include code for unsupported translators
  */
-Zotero.Translators.CodeGetter = function(translators, callback, callbackArgs, debugMode) {
+Zotero.Translators.CodeGetter = function(translators, debugMode) {
 	this._translators = translators;
-	this._callbackArgs = callbackArgs;
-	this._callback = callback;
 	this._debugMode = debugMode;
-	this.getCodeFor(0);
-}
+	this._concurrency = 1;
+};
 
-Zotero.Translators.CodeGetter.prototype.getCodeFor = function(i) {
-	var me = this;
-	while(true) {
-		if(i === this._translators.length) {
-			// all done; run callback
-			this._callback(this._callbackArgs);
-			return;
-		}
-		
-		var translator = this._translators[i];
-		
-		// retrieve code if no code and translator is supported locally
-		if((translator.runMode === Zotero.Translator.RUN_MODE_IN_BROWSER && !translator.hasOwnProperty("code"))
-				// or if debug mode is enabled (even if unsupported locally)
-				|| (this._debugMode && (!translator.hasOwnProperty("code")
-				// or if in debug mode and the code we have came from the repo (which doesn't
-				// include test cases)
-				|| (Zotero.Repo && translator.codeSource === Zotero.Repo.SOURCE_REPO)))) {
-				// get next translator
-			translator.getCode(function() { me.getCodeFor(i+1) });
-			return;
-		}
-		
-		// if we are not at end of list and there is no reason to retrieve the code, keep going
-		// through the list of potential translators
-		i++;
+Zotero.Translators.CodeGetter.prototype.getCodeFor = Zotero.Promise.method(function(i) {
+	let translator = this._translators[i];
+	// retrieve code if no code and translator is supported locally
+	if((translator.runMode === Zotero.Translator.RUN_MODE_IN_BROWSER && !translator.hasOwnProperty("code"))
+			// or if debug mode is enabled (even if unsupported locally)
+			|| (this._debugMode && (!translator.hasOwnProperty("code")
+			// or if in debug mode and the code we have came from the repo (which doesn't
+			// include test cases)
+			|| (Zotero.Repo && translator.codeSource === Zotero.Repo.SOURCE_REPO)))) {
+		// get code
+		return translator.getCode();
 	}
-}
+});
 
-const TRANSLATOR_REQUIRED_PROPERTIES = ["translatorID", "translatorType", "label", "creator", "target",
+Zotero.Translators.CodeGetter.prototype.getAll = function () {
+	var codes = [];
+	// Chain promises with some level of concurrency. If unchained, fires 
+	// off hundreds of xhttprequests on connectors and crashes the extension
+	for (let i = 0; i < this._translators.length; i++) {
+		if (i < this._concurrency) {
+			codes.push(this.getCodeFor(i));
+		} else {
+			codes.push(codes[i-this._concurrency].then(() => this.getCodeFor(i)));
+		}
+	}
+	return Promise.all(codes);
+};
+
+var TRANSLATOR_REQUIRED_PROPERTIES = ["translatorID", "translatorType", "label", "creator", "target",
 		"priority", "lastUpdated"];
-var TRANSLATOR_PASSING_PROPERTIES = TRANSLATOR_REQUIRED_PROPERTIES.concat(["browserSupport", "code", "runMode"]);
+var TRANSLATOR_PASSING_PROPERTIES = TRANSLATOR_REQUIRED_PROPERTIES
+		.concat(["targetAll", "browserSupport", "code", "runMode", "itemType"]);
 var TRANSLATOR_SAVE_PROPERTIES = TRANSLATOR_REQUIRED_PROPERTIES.concat(["browserSupport"]);
 /**
  * @class Represents an individual translator
@@ -414,7 +402,6 @@ Zotero.Translator.prototype.init = function(info) {
 		var property = TRANSLATOR_REQUIRED_PROPERTIES[i];
 		if(info[property] === undefined) {
 			Zotero.logError(new Error('Missing property "'+property+'" in translator metadata JSON object in ' + info.label));
-			haveMetadata = false;
 			break;
 		} else {
 			this[property] = info[property];
@@ -438,7 +425,10 @@ Zotero.Translator.prototype.init = function(info) {
 	 
 	if(this.translatorType & TRANSLATOR_TYPES["web"]) {
 		// compile web regexp
-		this.webRegexp = this.target ? new RegExp(this.target, "i") : null;
+		this.webRegexp = {
+			root: this.target ? new RegExp(this.target, "i") : null,
+			all: this.targetAll ? new RegExp(this.targetAll, "i") : null
+		};
 	} else if(this.hasOwnProperty("webRegexp")) {
 		delete this.webRegexp;
 	}
@@ -452,21 +442,23 @@ Zotero.Translator.prototype.init = function(info) {
 
 /**
  * Retrieves code for this translator
+ *
+ * @return {Promise<String|false>} - Promise for translator code or false if none
  */
-Zotero.Translator.prototype.getCode = function(callback) {
-	var me = this;
-	Zotero.Repo.getTranslatorCode(this.translatorID,
-		function(code, source) {
-			if(!code) {
-				callback(false);
-			} else {
-				// cache code for session only (we have standalone anyway)
-				me.code = code;
-				me.codeSource = source;
-				callback(true);
-			}
+Zotero.Translator.prototype.getCode = function (debugMode) {
+	return Zotero.Repo.getTranslatorCode(this.translatorID, debugMode)
+	.then(function (args) {
+		var code = args[0];
+		var source = args[1];
+		if (!code) {
+			return false;
 		}
-	);
+		
+		// cache code for session only (we have standalone anyway)
+		this.code = code;
+		this.codeSource = source;
+		return code;
+	}.bind(this));
 }
 
 /**

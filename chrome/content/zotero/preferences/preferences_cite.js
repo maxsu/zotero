@@ -26,10 +26,10 @@
 "use strict";
 
 Zotero_Preferences.Cite = {
-	init: function () {
+	init: Zotero.Promise.coroutine(function* () {
 		this.updateWordProcessorInstructions();
-		this.refreshStylesList();
-	},
+		yield this.refreshStylesList();
+	}),
 	
 	
 	/**
@@ -48,8 +48,9 @@ Zotero_Preferences.Cite = {
 	/**
 	 * Refreshes the list of styles in the styles pane
 	 * @param {String} cslID Style to select
+	 * @return {Promise}
 	 */
-	refreshStylesList: function (cslID) {
+	refreshStylesList: Zotero.Promise.coroutine(function* (cslID) {
 		Zotero.debug("Refreshing styles list");
 		
 		var treechildren = document.getElementById('styleManager-rows');
@@ -57,16 +58,14 @@ Zotero_Preferences.Cite = {
 			treechildren.removeChild(treechildren.firstChild);
 		}
 		
+		yield Zotero.Styles.init();
 		var styles = Zotero.Styles.getVisible();
-		
 		var selectIndex = false;
-		var i = 0;
-		for each(var style in styles) {
+		styles.forEach(function (style, i) {
 			var treeitem = document.createElement('treeitem');
 			var treerow = document.createElement('treerow');
 			var titleCell = document.createElement('treecell');
 			var updatedCell = document.createElement('treecell');
-			var cslCell = document.createElement('treecell');
 			
 			if (style.updated) {
 				var updatedDate = Zotero.Date.formatDate(Zotero.Date.strToDate(style.updated), true);
@@ -78,23 +77,17 @@ Zotero_Preferences.Cite = {
 			treeitem.setAttribute('id', 'zotero-csl-' + style.styleID);
 			titleCell.setAttribute('label', style.title);
 			updatedCell.setAttribute('label', updatedDate);
-			// if not EN
-			if(style.type == "csl") {
-				cslCell.setAttribute('src', 'chrome://zotero/skin/tick.png');
-			}
 			
 			treerow.appendChild(titleCell);
 			treerow.appendChild(updatedCell);
-			treerow.appendChild(cslCell);
 			treeitem.appendChild(treerow);
 			treechildren.appendChild(treeitem);
 			
 			if (cslID == style.styleID) {
 				document.getElementById('styleManager').view.selection.select(i);
 			}
-			i++;
-		}
-	},
+		});
+	}),
 	
 	
 	/**
@@ -118,7 +111,7 @@ Zotero_Preferences.Cite = {
 	/**
 	 * Deletes selected styles from the styles pane
 	 **/
-	deleteStyle: function () {
+	deleteStyle: Zotero.Promise.coroutine(function* () {
 		// get selected cslIDs
 		var tree = document.getElementById('styleManager');
 		var treeItems = tree.lastChild.childNodes;
@@ -147,17 +140,17 @@ Zotero_Preferences.Cite = {
 		if(ps.confirm(null, '', text)) {
 			// delete if requested
 			if(cslIDs.length == 1) {
-				selectedStyle.remove();
+				yield selectedStyle.remove();
 			} else {
 				for(var i=0; i<cslIDs.length; i++) {
-					Zotero.Styles.get(cslIDs[i]).remove();
+					yield Zotero.Styles.get(cslIDs[i]).remove();
 				}
 			}
 			
-			this.refreshStylesList();
+			yield this.refreshStylesList();
 			document.getElementById('styleManager-delete').disabled = true;
 		}
-	},
+	}),
 	
 	
 	/**

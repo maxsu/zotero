@@ -12,8 +12,9 @@
 <!ENTITY zotero.preferences.showIn.browserPane "Текущей панели">
 <!ENTITY zotero.preferences.showIn.separateTab "Отдельной вкладке">
 <!ENTITY zotero.preferences.showIn.appTab "Вкладке приложения">
-<!ENTITY zotero.preferences.statusBarIcon "Вид в строке состояния:">
-<!ENTITY zotero.preferences.statusBarIcon.none "Нет">
+<!ENTITY zotero.preferences.layout "Layout:">
+<!ENTITY zotero.preferences.layout.standard "Standard">
+<!ENTITY zotero.preferences.layout.stacked "Stacked">
 <!ENTITY zotero.preferences.fontSize "Размер шрифта:">
 <!ENTITY zotero.preferences.fontSize.small "Маленький">
 <!ENTITY zotero.preferences.fontSize.medium "Средний">
@@ -22,7 +23,7 @@
 <!ENTITY zotero.preferences.fontSize.notes "Размер шрифта заметок:">
 
 <!ENTITY zotero.preferences.miscellaneous "Разное">
-<!ENTITY zotero.preferences.autoUpdate "Автоматически проверять на наличие обновленных трансляторов">
+<!ENTITY zotero.preferences.autoUpdate "Автоматически проверять на наличие обновленных трансляторов и стилей">
 <!ENTITY zotero.preferences.updateNow "Обновить сейчас">
 <!ENTITY zotero.preferences.reportTranslationFailure "Сообщить о неработающих трансляторах сайта">
 <!ENTITY zotero.preferences.zoteroDotOrgVersionHeader "Разрешить zotero.org модифицировать содержание на основе текущей версии Zotero">
@@ -41,6 +42,12 @@
 <!ENTITY zotero.preferences.groups.childLinks "дочерние ссылки">
 <!ENTITY zotero.preferences.groups.tags "теги">
 
+<!ENTITY zotero.preferences.feeds "Feeds">
+<!ENTITY zotero.preferences.feeds.sorting.label "Sorting:">
+<!ENTITY zotero.preferences.feeds.sorting.newest "Newest items first">
+<!ENTITY zotero.preferences.feeds.sorting.oldest "Oldest items first">
+<!ENTITY zotero.preferences.feeds.feedDefaults "Feed Defaults">
+
 <!ENTITY zotero.preferences.openurl.caption "OpenURL">
 
 <!ENTITY zotero.preferences.openurl.search "Поиск ресолверов">
@@ -51,10 +58,14 @@
 <!ENTITY zotero.preferences.prefpane.sync "Синхронизация">
 <!ENTITY zotero.preferences.sync.username "Имя пользователя:">
 <!ENTITY zotero.preferences.sync.password "Пароль:">
-<!ENTITY zotero.preferences.sync.syncServer "Сервер синхронизации Zotero">
+<!ENTITY zotero.preferences.sync.syncServer "Zotero Data Sync">
+<!ENTITY zotero.preferences.sync.setUpSync "Set Up Syncing">
+<!ENTITY zotero.preferences.sync.unlinkAccount "Unlink Account...">
 <!ENTITY zotero.preferences.sync.createAccount "Создать учётную запись">
 <!ENTITY zotero.preferences.sync.lostPassword "Забыли пароль?">
 <!ENTITY zotero.preferences.sync.syncAutomatically "Синхронизировать автоматически">
+<!ENTITY zotero.preferences.sync.syncFullTextContent "Sync full-text content">
+<!ENTITY zotero.preferences.sync.syncFullTextContent.desc "Zotero can sync the full-text content of files in your Zotero libraries with zotero.org and other linked devices, allowing you to easily search for your files wherever you are. The full-text content of your files will not be shared publicly.">
 <!ENTITY zotero.preferences.sync.about "О синхронизации">
 <!ENTITY zotero.preferences.sync.fileSyncing "Синхронизация файлов">
 <!ENTITY zotero.preferences.sync.fileSyncing.url "URL-адрес:">
@@ -65,11 +76,15 @@
 <!ENTITY zotero.preferences.sync.fileSyncing.download.onDemand "по мере необходимости">
 <!ENTITY zotero.preferences.sync.fileSyncing.tos1 "Используя хранилище Zotero, вы соглашаетесь быть связанными его">
 <!ENTITY zotero.preferences.sync.fileSyncing.tos2 "условиями использования">
+<!ENTITY zotero.preferences.sync.librariesToSync "Libraries to Sync">
+<!ENTITY zotero.preferences.sync.librariesToSync.button "Choose Libraries...">
+<!ENTITY zotero.preferences.sync.librariesToSync.sync "Sync">
+<!ENTITY zotero.preferences.sync.librariesToSync.library "Library">
 <!ENTITY zotero.preferences.sync.reset.warning1 "Следующие операции используются только в редких особых случаях и не должны использоваться при решении проблем общего характера. Во многих случаях, сброс настроек приводит к возникновению дополнительных сложностей. См. ">
 <!ENTITY zotero.preferences.sync.reset.warning2 "Параметры сброса настроек синхронизации">
 <!ENTITY zotero.preferences.sync.reset.warning3 " для дополнительных сведений.">
-<!ENTITY zotero.preferences.sync.reset.fullSync "Полная синхронизация с сервером Zotero">
-<!ENTITY zotero.preferences.sync.reset.fullSync.desc "Объединить локальные данные Zotero c данными с сервера, игнорируя историю синхронизации">
+<!ENTITY zotero.preferences.sync.reset.fullSync "Full Sync">
+<!ENTITY zotero.preferences.sync.reset.fullSync.desc "Merge local data with data from server, ignoring sync history.">
 <!ENTITY zotero.preferences.sync.reset.restoreFromServer "Восстановить с сервера Zotero">
 <!ENTITY zotero.preferences.sync.reset.restoreFromServer.desc "Удалить все локальные данные Zotero и восстановить с сервера">
 <!ENTITY zotero.preferences.sync.reset.restoreToServer "Восстановить на сервере Zotero">
@@ -107,6 +122,7 @@
 <!ENTITY zotero.preferences.quickCopy.siteEditor.domainPath "Домен/путь">
 <!ENTITY zotero.preferences.quickCopy.siteEditor.domainPath.example "(например wikipedia.org)">
 <!ENTITY zotero.preferences.quickCopy.siteEditor.outputFormat "Выходной формат">
+<!ENTITY zotero.preferences.quickCopy.siteEditor.locale "Language">
 <!ENTITY zotero.preferences.quickCopy.dragLimit "Выключить быстрое копирование при перетаскивании более">
 
 <!ENTITY zotero.preferences.prefpane.cite "Цитирование">
@@ -123,19 +139,18 @@
 <!ENTITY zotero.preferences.cite.styles.styleManager.csl "CSL">
 <!ENTITY zotero.preferences.export.getAdditionalStyles "Загрузить дополнительные стили…">
 
-<!ENTITY zotero.preferences.prefpane.keys "Горячие клавиши">
-
 <!ENTITY zotero.preferences.keys.openZotero "Открыть/закрыть панель Zotero">
+<!ENTITY zotero.preferences.keys.saveToZotero "Сохранить в Zotero (значок в адресной строке браузера)">
 <!ENTITY zotero.preferences.keys.toggleFullscreen "Переключение полноэкранного режима">
 <!ENTITY zotero.preferences.keys.focusLibrariesPane "Фокус на панели библиотек">
 <!ENTITY zotero.preferences.keys.quicksearch "Быстрый поиск">
 <!ENTITY zotero.preferences.keys.newItem "Создать новый документ">
 <!ENTITY zotero.preferences.keys.newNote "Создать новую заметку">
+<!ENTITY zotero.preferences.keys.toggleAllRead "Mark All Feed Items As Read/Unread">
 <!ENTITY zotero.preferences.keys.toggleTagSelector "Переключить панель выбора тэгов">
 <!ENTITY zotero.preferences.keys.copySelectedItemCitationsToClipboard "Скопировать цитаты из выбранного документа в буфер обмена">
 <!ENTITY zotero.preferences.keys.copySelectedItemsToClipboard "Копировать выбранные документы в буфер обмена">
 <!ENTITY zotero.preferences.keys.importFromClipboard "Импортировать из буфера обмена">
-<!ENTITY zotero.preferences.keys.overrideGlobal "Попытаться переопределить конфликтующие комбинации клавиш">
 <!ENTITY zotero.preferences.keys.changesTakeEffect "Изменения вступят в силу только в новых окнах">
 
 <!ENTITY zotero.preferences.prefpane.proxies "Прокси">
@@ -146,6 +161,7 @@
 <!ENTITY zotero.preferences.proxies.desc_after_link "для дополнительной информации.">
 <!ENTITY zotero.preferences.proxies.transparent "Использовать перенаправление">
 <!ENTITY zotero.preferences.proxies.autoRecognize "Автоматически распознавать используемые прокси">
+<!ENTITY zotero.preferences.proxies.showRedirectNotification "Show notification when redirecting through a proxy">
 <!ENTITY zotero.preferences.proxies.disableByDomain "Отключить перенаправление, когда моё доменное имя содержит ">
 <!ENTITY zotero.preferences.proxies.configured "Настроенные прокси">
 <!ENTITY zotero.preferences.proxies.hostname "Имя хоста">
@@ -162,6 +178,7 @@
 
 <!ENTITY zotero.preferences.prefpane.advanced "Расширенные">
 <!ENTITY zotero.preferences.advanced.filesAndFolders "Файлы и папки">
+<!ENTITY zotero.preferences.advanced.keys "Shortcuts">
 
 <!ENTITY zotero.preferences.prefpane.locate "Обнаружение">
 <!ENTITY zotero.preferences.locate.locateEngineManager "Диспетчер систем поиска статей">
@@ -184,7 +201,7 @@
 <!ENTITY zotero.preferences.attachmentBaseDir.caption "Базовый каталог связанных вложений">
 <!ENTITY zotero.preferences.attachmentBaseDir.message "Приложением Zotero будут использоваться значения относительных путей для связанных файловых вложений в базовом каталоге, обеспечивая пользователю доступ к файлам на других компьютерах до тех пор, пока структура базового каталога остается без изменений.">
 <!ENTITY zotero.preferences.attachmentBaseDir.basePath "Базовый каталог:">
-<!ENTITY zotero.preferences.attachmentBaseDir.selectBasePath "Выбрать…">
+<!ENTITY zotero.preferences.attachmentBaseDir.selectBasePath "Выбрать...">
 <!ENTITY zotero.preferences.attachmentBaseDir.resetBasePath "Вернуть значения абсолютных путей...">
 
 <!ENTITY zotero.preferences.dbMaintenance "Поддержка БД">
@@ -202,6 +219,6 @@
 <!ENTITY zotero.preferences.debugOutputLogging.submitToServer "Отправить на сервер Zotero">
 
 <!ENTITY zotero.preferences.openAboutConfig "Открыть about:config">
-<!ENTITY zotero.preferences.openCSLEdit "Открыть редактор CSL">
-<!ENTITY zotero.preferences.openCSLPreview "Открыть предварительный просмотр CSL">
+<!ENTITY zotero.preferences.openCSLEdit "Open Style Editor">
+<!ENTITY zotero.preferences.openCSLPreview "Open Style Preview">
 <!ENTITY zotero.preferences.openAboutMemory "Открыть страницу about:memory">

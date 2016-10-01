@@ -36,44 +36,83 @@
 		</resources>
 		
 		<implementation>
+			<property name="groups"/>
+			
 			<field name="searchRef"/>
 			<property name="search" onget="return this.searchRef;">
 				<setter>
 					<![CDATA[
 						this.searchRef = val;
 						
+						this.buildLibraryMenu();
+						
 						var conditionsBox = this.id('conditions');
 						while(conditionsBox.hasChildNodes())
 							conditionsBox.removeChild(conditionsBox.firstChild);
 						
-						var conditions = this.search.getSearchConditions();
-						
-						for(var id in conditions)
-						{
+						var conditions = this.search.getConditions();
+						for (let id in conditions) {
+							let condition = conditions[id];
 							// Checkboxes
-							switch (conditions[id]['condition']) {
+							switch (condition.condition) {
 								case 'recursive':
 								case 'noChildren':
 								case 'includeParentsAndChildren':
-									var checkbox = conditions[id]['condition'] + 'Checkbox';
-									this.id(checkbox).setAttribute('condition',id);
-									this.id(checkbox).checked = (conditions[id]['operator']=='true');
+									let checkbox = condition.condition + 'Checkbox';
+									this.id(checkbox).setAttribute('condition', id);
+									this.id(checkbox).checked = condition.operator == 'true';
 									continue;
 							}
 							
-							if(conditions[id]['condition'] == 'joinMode')
-							{
-								this.id('joinModeMenu').setAttribute('condition',id);
-								this.id('joinModeMenu').value = conditions[id]['operator'];
+							if(condition.condition == 'joinMode') {
+								this.id('joinModeMenu').setAttribute('condition', id);
+								this.id('joinModeMenu').value = condition.operator;
 							}
-							else
-							{
-								this.addCondition(conditions[id]);
+							else {
+								this.addCondition(condition);
 							}
 						}
 					]]>
 				</setter>
 			</property>
+			
+			<method name="buildLibraryMenu">
+				<body><![CDATA[
+					var menulist = this.id('libraryMenu');
+					var menupopup = menulist.firstChild;
+					
+					while (menupopup.hasChildNodes()) {
+						menupopup.removeChild(menupopup.firstChild);
+					}
+					
+					var libraryID = this.searchRef.libraryID;
+					var libraryIndex = 0;
+					
+					var libraries = Zotero.Libraries.getAll();
+					var selectedIndex = 0;
+					var i = 0;
+					for (let library of libraries) {
+						let menuitem = document.createElement('menuitem');
+						menuitem.setAttribute('label', library.name);
+						menuitem.setAttribute('libraryID', library.libraryID);
+						menupopup.appendChild(menuitem);
+						if (library.libraryID == libraryID) {
+							selectedIndex = i;
+						}
+						i++
+					}
+					
+					menulist.appendChild(menupopup);
+					menulist.selectedIndex = selectedIndex;
+					
+					if (this.searchRef.id) {
+						this.id('libraryMenu').disabled = true;
+					}
+					
+					this.updateLibrary();
+				]]></body>
+			</method>
+			
 			<method name="addCondition">
 				<parameter name="ref"/>
 				<body>
@@ -86,7 +125,7 @@
 						
 						// Default to an empty 'title' condition
 						if (!ref) {
-							ref = this.search.getSearchCondition(this.search.addCondition("title","contains",""))
+							ref = this.search.getCondition(this.search.addCondition("title","contains",""))
 						}
 						
 						condition.initWithParentAndCondition(this, ref);
@@ -100,6 +139,7 @@
 					]]>
 				</body>
 			</method>
+			
 			<method name="removeCondition">
 				<parameter name="id"/>
 				<body>
@@ -121,6 +161,21 @@
 					]]>
 				</body>
 			</method>
+			
+			<method name="updateLibrary">
+				<body><![CDATA[
+					var menu = this.id('libraryMenu');
+					var libraryID = parseInt(menu.selectedItem.getAttribute('libraryID'));
+					
+				 	if (this.onLibraryChange) {
+				 		this.onLibraryChange(libraryID);
+					}
+					if (!this.searchRef.id) {
+						this.searchRef.libraryID = libraryID;
+					}
+				]]></body>
+			</method>
+			
 			<method name="updateJoinMode">
 				<body>
 					<![CDATA[
@@ -132,6 +187,7 @@
 					]]>
 				</body>
 			</method>
+			
 			<method name="updateCheckbox">
 				<parameter name="condition"/>
 				<body>
@@ -151,25 +207,17 @@
 					]]>
 				</body>
 			</method>
+			
 			<!-- Calls updateSearch() on all search conditions -->
 			<method name="updateSearch">
 				<body>
 					<![CDATA[
 						var conditionsBox = this.id('conditions');
-						
 						if (conditionsBox.hasChildNodes()) {
 							for(var i = 0, len=conditionsBox.childNodes.length; i < len; i++) {
 								conditionsBox.childNodes[i].updateSearch();
 							}
 						}
-					]]>
-				</body>
-			</method>
-			<method name="save">
-				<body>
-					<![CDATA[
-						this.updateSearch();
-						return this.search.save(true);
 					]]>
 				</body>
 			</method>
@@ -180,7 +228,8 @@
 				<![CDATA[
 					switch (event.keyCode) {
 						case event.DOM_VK_RETURN:
-						case event.DOM_VK_ENTER:
+							this.active = true;
+							
 							if (event.shiftKey) {
 								this.addCondition();
 							}
@@ -193,7 +242,6 @@
 				</body>
 			</method>
 			
-			
 			<method name="id">
 				<parameter name="id"/>
 				<body>
@@ -205,26 +253,35 @@
 		</implementation>
 		
 		<content>
-			<xul:vbox id="search-box" flex="1" onkeypress="document.getBindingParent(this).handleKeyPress(event)">
-				<xul:groupbox xbl:inherits="flex">
-					<xul:caption align="center">
-						<xul:label value="&zotero.search.joinMode.prefix;"/>
-						<xul:menulist id="joinModeMenu" oncommand="document.getBindingParent(this).updateJoinMode(); event.stopPropagation()">
-							<xul:menupopup>
-								<xul:menuitem label="&zotero.search.joinMode.any;" value="any"/>
-								<xul:menuitem label="&zotero.search.joinMode.all;" value="all" selected="true"/>
-							</xul:menupopup>
-						</xul:menulist>
-						<xul:label value="&zotero.search.joinMode.suffix;"/>
-					</xul:caption>
-					<xul:vbox id="conditions"/>
-				</xul:groupbox>
-				<xul:hbox>
-					<xul:checkbox id="recursiveCheckbox" label="&zotero.search.recursive.label;" oncommand="document.getBindingParent(this).updateCheckbox('recursive'); event.stopPropagation()"/>
-					<xul:checkbox id="noChildrenCheckbox" label="&zotero.search.noChildren;" oncommand="document.getBindingParent(this).updateCheckbox('noChildren'); event.stopPropagation()"/>
-				</xul:hbox>
-				<xul:checkbox id="includeParentsAndChildrenCheckbox" label="&zotero.search.includeParentsAndChildren;" oncommand="document.getBindingParent(this).updateCheckbox('includeParentsAndChildren'); event.stopPropagation()"/>
-			</xul:vbox>
+			<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+					id="search-box" flex="1" onkeypress="document.getBindingParent(this).handleKeyPress(event)">
+				<hbox align="center">
+					<label value="&zotero.search.searchInLibrary;" control="libraryMenu"/>
+					<menulist id="libraryMenu" oncommand="document.getBindingParent(this).updateLibrary();">
+						<menupopup/>
+					</menulist>
+				</hbox>
+				<groupbox xbl:inherits="flex">
+					<caption align="center">
+						<label value="&zotero.search.joinMode.prefix;"/>
+						<menulist id="joinModeMenu" oncommand="document.getBindingParent(this).updateJoinMode();">
+							<menupopup>
+								<menuitem label="&zotero.search.joinMode.any;" value="any"/>
+								<menuitem label="&zotero.search.joinMode.all;" value="all" selected="true"/>
+							</menupopup>
+						</menulist>
+						<label value="&zotero.search.joinMode.suffix;"/>
+					</caption>
+					<vbox id="conditions"/>
+				</groupbox>
+				<hbox>
+					<checkbox id="recursiveCheckbox" label="&zotero.search.recursive.label;" oncommand="document.getBindingParent(this).updateCheckbox('recursive');"/>
+					<checkbox id="noChildrenCheckbox" label="&zotero.search.noChildren;" oncommand="document.getBindingParent(this).updateCheckbox('noChildren');"/>
+				</hbox>
+				<hbox>
+					<checkbox id="includeParentsAndChildrenCheckbox" label="&zotero.search.includeParentsAndChildren;" oncommand="document.getBindingParent(this).updateCheckbox('includeParentsAndChildren');"/>
+				</hbox>
+			</vbox>
 		</content>
 	</binding>
 	
@@ -312,7 +369,7 @@
 								label.setAttribute('value', Zotero.getString('searchConditions.tooltip.fields'));
 								fieldRow.appendChild(label);
 								var vbox = document.createElement('vbox');
-								for each(var str in localized) {
+								for (let str of localized) {
 									var label = document.createElement('label')
 									label.setAttribute('value', str);
 									vbox.appendChild(label);
@@ -334,8 +391,7 @@
 				]]>
 			</constructor>
 			<method name="onConditionSelected">
-				<body>
-					<![CDATA[
+				<body><![CDATA[
 					// Skip if correct condition already selected
 					if (this.id('conditionsmenu').value==this.selectedCondition){
 						return;
@@ -369,8 +425,7 @@
 							var rows = [];
 							
 							var libraryID = this.parent.search.libraryID;
-							libraryID = libraryID ? libraryID : null;
-							var cols = Zotero.getCollections(false, true, libraryID);
+							var cols = Zotero.Collections.getByLibrary(libraryID, true);
 							for (var i in cols) {
 								// Indent subcollections
 								var indent = '';
@@ -380,7 +435,7 @@
 									}
 									indent += '- ';
 								}
-								rows.push([indent + cols[i].name, 'C' + Zotero.Collections.getLibraryKeyHash(cols[i])]);
+								rows.push([indent + cols[i].name, 'C' + cols[i].key]);
 							}
 							this.createValueMenu(rows);
 							break;
@@ -388,11 +443,10 @@
 						case 'savedSearch':
 							var rows = [];
 							var libraryID = this.parent.search.libraryID;
-							libraryID = libraryID ? libraryID : null;
 							var searches = Zotero.Searches.getAll(libraryID);
 							for (var i in searches) {
 								if (searches[i].id != this.parent.search.id) {
-									rows.push([searches[i].name, 'S' + Zotero.Searches.getLibraryKeyHash(searches[i])]);
+									rows.push([searches[i].name, 'S' + searches[i].key]);
 								}
 							}
 							this.createValueMenu(rows);
@@ -458,8 +512,7 @@
 					}
 					
 					this.onOperatorSelected();
-					]]>
-				</body>
+				]]></body>
 			</method>
 			<method name="onOperatorSelected">
 				<body>
@@ -528,52 +581,50 @@
 			<method name="initWithParentAndCondition">
 				<parameter name="parent"/>
 				<parameter name="condition"/>
-				<body>
-					<![CDATA[
-						this.parent = parent;
-						this.conditionID = condition['id'];
+				<body><![CDATA[
+					this.parent = parent;
+					this.conditionID = condition['id'];
+					
+					if(this.parent.search)
+					{
+						this.dontupdate = true;	//so that the search doesn't get updated while we are creating controls.
+						var prefix = '';
 						
-						if(this.parent.search)
-						{
-							this.dontupdate = true;	//so that the search doesn't get updated while we are creating controls.
-							var prefix = '';
+						// Handle special conditions
+						switch (condition.condition) {
+							case 'savedSearch':
+								prefix = 'S';
+								break;
 							
-							// Handle special conditions
-							switch (condition.condition) {
-								case 'savedSearch':
-									prefix = 'S';
-									break;
-								
-								case 'collection':
-									prefix = 'C';
-									break;
-							}
-							
-							this.id('conditionsmenu').value = condition.condition;
-							
-							// Convert datetimes from UTC to localtime
-							if ((condition['condition']=='accessDate' ||
-									condition['condition']=='dateAdded' ||
-									condition['condition']=='dateModified') &&
-									Zotero.Date.isSQLDateTime(condition['value'])){
-								
-								condition['value'] =
-									Zotero.Date.dateToSQL(Zotero.Date.sqlToDate(condition['value'], true));
-							}
-							
-							this.mode = condition['mode'];
-							this.id('operatorsmenu').value = condition['operator'];
-							this.value = prefix +
-								(condition.value ? condition.value : '');
-
-							this.dontupdate = false;
+							case 'collection':
+								prefix = 'C';
+								break;
 						}
 						
-						this.onConditionSelected();
+						this.id('conditionsmenu').value = condition.condition;
 						
-						this.id('conditionsmenu').focus();
-					]]>
-				</body>
+						// Convert datetimes from UTC to localtime
+						if ((condition['condition']=='accessDate' ||
+								condition['condition']=='dateAdded' ||
+								condition['condition']=='dateModified') &&
+								Zotero.Date.isSQLDateTime(condition['value'])){
+							
+							condition['value'] =
+								Zotero.Date.dateToSQL(Zotero.Date.sqlToDate(condition['value'], true));
+						}
+						
+						this.mode = condition['mode'];
+						this.id('operatorsmenu').value = condition['operator'];
+						this.value = prefix +
+							(condition.value ? condition.value : '');
+
+						this.dontupdate = false;
+					}
+					
+					this.onConditionSelected();
+					
+					this.id('conditionsmenu').focus();
+				]]></body>
 			</method>
 			<!-- Gets the value from the field and updates the associated search condition -->
 			<method name="updateSearch">

@@ -57,6 +57,7 @@
 					Zotero.debug("Setting mode to '" + val + "'");
 					
 					this.editable = false;
+					this.synchronous = false;
 					this.displayURL = false;
 					this.displayFileName = false;
 					this.clickableLink = false;
@@ -93,6 +94,7 @@
 							break;
 						
 						case 'merge':
+							this.synchronous = true;
 							this.displayURL = true;
 							this.displayFileName = true;
 							this.displayAccessed = true;
@@ -102,6 +104,7 @@
 							break;
 						
 						case 'mergeedit':
+							this.synchronous = true;
 							this.editable = true;
 							this.displayURL = true;
 							this.displayFileName = true;
@@ -109,6 +112,13 @@
 							this.displayNote = true;
 							// Notes aren't currently editable in mergeedit pane
 							this.displayNoteIfEmpty = false;
+							this.displayDateModified = true;
+							break;
+						
+						case 'filemerge':
+							this.synchronous = true;
+							this.displayURL = true;
+							this.displayFileName = true;
 							this.displayDateModified = true;
 							break;
 						
@@ -123,23 +133,48 @@
 			</property>
 			
 			<field name="_item"/>
-			<property name="item"
-				onget="return this._item;"
-				onset="this._item = val; this.refresh();">
+			<property name="item" onget="return this._item;">
+				<setter><![CDATA[
+					if (!(val instanceof Zotero.Item)) {
+						throw new Error("'item' must be a Zotero.Item");
+					}
+					this._item = val;
+					this.refresh();
+				]]></setter>
 			</property>
 			
-			<!-- .ref is an alias for .item -->
-			<property name="ref"
-				onget="return this._item;"
-				onset="this._item = val; this.refresh();">
-			</property>
+			<!-- Methods -->
 			
+			<constructor>
+			<![CDATA[
+				this._notifierID = Zotero.Notifier.registerObserver(this, ['item'], 'attachmentbox');
+			]]>
+			</constructor>
 			
-			<!-- Private properties -->
+			<destructor>
+			<![CDATA[
+				Zotero.Notifier.unregisterObserver(this._notifierID);
+			]]>
+			</destructor>
+			
+			<method name="notify">
+				<parameter name="event"/>
+				<parameter name="type"/>
+				<parameter name="ids"/>
+				<body><![CDATA[
+					if (event != 'modify' || !this.item || !this.item.id) return;
+					for (let i = 0; i < ids.length; i++) {
+						if (ids[i] != this.item.id) {
+							continue;
+						}
+						this.refresh();
+						break;
+					}
+				]]></body>
+			</method>
 			
 			<method name="refresh">
-				<body>
-				<![CDATA[
+				<body><![CDATA[
 					Zotero.debug('Refreshing attachment box');
 					
 					var attachmentBox = document.getAnonymousNodes(this)[0];
@@ -234,7 +269,7 @@
 					if (this.item.attachmentLinkMode
 								!= Zotero.Attachments.LINK_MODE_LINKED_URL
 							&& this.displayFileName) {
-						var fileName = this.item.getFilename();
+						var fileName = this.item.attachmentFilename;
 						
 						if (fileName) {
 							this._id("fileName-label").value = Zotero.getString('pane.item.attachments.filename')
@@ -252,17 +287,20 @@
 					
 					// Page count
 					if (this.displayPages) {
-						var pages = Zotero.Fulltext.getPages(this.item.id);
-						var pages = pages ? pages.total : null;
-						if (pages) {
-							this._id("pages-label").value = Zotero.getString('itemFields.pages')
-								+ Zotero.getString('punctuation.colon');
-							this._id("pages").value = pages;
-							pagesRow.hidden = false;
-						}
-						else {
-							pagesRow.hidden = true;
-						}
+						Zotero.Fulltext.getPages(this.item.id)
+						.tap(() => Zotero.Promise.check(this.item))
+						.then(function (pages) {
+							pages = pages ? pages.total : null;
+							if (pages) {
+								this._id("pages-label").value = Zotero.getString('itemFields.pages')
+									+ Zotero.getString('punctuation.colon');
+								this._id("pages").value = pages;
+								pagesRow.hidden = false;
+							}
+							else {
+								pagesRow.hidden = true;
+							}
+						}.bind(this));
 					}
 					else {
 						pagesRow.hidden = true;
@@ -271,18 +309,24 @@
 					if (this.displayDateModified) {
 						this._id("dateModified-label").value = Zotero.getString('itemFields.dateModified')
 							+ Zotero.getString('punctuation.colon');
-						var mtime = this.item.attachmentModificationTime;
-						if (mtime) {
-							this._id("dateModified").value = new Date(mtime).toLocaleString();
-						}
-						// Use the item's mod time as a backup (e.g., when sync
-						// passes in the mod time for the nonexistent remote file)
-						else {
+						// Conflict resolution uses a modal window, so promises won't work, but
+						// the sync process passes in the file mod time as dateModified
+						if (this.synchronous) {
 							this._id("dateModified").value = Zotero.Date.sqlToDate(
 								this.item.getField('dateModified'), true
 							).toLocaleString();
+							dateModifiedRow.hidden = false;
 						}
-						dateModifiedRow.hidden = false;
+						else {
+							this.item.attachmentModificationTime
+							.tap(() => Zotero.Promise.check(this._id))
+							.then(function (mtime) {
+								if (mtime) {
+									this._id("dateModified").value = new Date(mtime).toLocaleString();
+								}
+								dateModifiedRow.hidden = false;
+							}.bind(this));
+						}
 					}
 					else {
 						dateModifiedRow.hidden = true;
@@ -290,8 +334,11 @@
 					
 					// Full-text index information
 					if (this.displayIndexed) {
-						this.updateItemIndexedState();
-						indexStatusRow.hidden = false;
+						this.updateItemIndexedState()
+						.tap(() => Zotero.Promise.check(this.item))
+						.then(function () {
+							indexStatusRow.hidden = false;
+						});
 					}
 					else {
 						indexStatusRow.hidden = true;
@@ -331,8 +378,7 @@
 					else {
 						selectButton.hidden = true;
 					}
-				]]>
-				</body>
+				]]></body>
 			</method>
 			
 			
@@ -388,22 +434,30 @@
 						
 						// Rename associated file
 						if (checkState.value) {
-							var renamed = item.renameAttachmentFile(newTitle.value);
+							var newFilename = newTitle.value.trim();
+							if (newFilename.search(/\.\w{1,10}$/) == -1) {
+								// User did not specify extension. Use current
+								var oldExt = item.getFilename().match(/\.\w{1,10}$/);
+								if (oldExt) newFilename += oldExt[0];
+							}
+							var renamed = item.renameAttachmentFile(newFilename);
 							if (renamed == -1) {
 								var confirmed = nsIPS.confirm(
 									window,
 									'',
-									newTitle.value + ' exists. Overwrite existing file?'
+									newFilename + ' exists. Overwrite existing file?'
 								);
-								if (confirmed) {
-									item.renameAttachmentFile(newTitle.value, true);
-									break;
+								if (!confirmed) {
+									// If they said not to overwrite existing file,
+									// start again
+									continue;
 								}
-								// If they said not to overwrite existing file,
-								// start again
-								continue;
+								
+								// Force overwrite, but make sure we check that this doesn't fail
+								renamed = item.renameAttachmentFile(newFilename, true);
 							}
-							else if (renamed == -2) {
+							
+							if (renamed == -2) {
 								nsIPS.alert(
 									window,
 									Zotero.getString('general.error'),
@@ -456,43 +510,50 @@
 			 Update Indexed: (Yes|No|Partial) line
 			-->
 			<method name="updateItemIndexedState">
-				<body>
-				<![CDATA[
-					var indexStatus = this._id('index-status');
-					var reindexButton = this._id('reindex');
-					
-					var status = Zotero.Fulltext.getIndexedState(this.item.id);
-					var str = 'fulltext.indexState.';
-					switch (status) {
-						case Zotero.Fulltext.INDEX_STATE_UNAVAILABLE:
-							str += 'unavailable';
-							break;
-						case Zotero.Fulltext.INDEX_STATE_UNINDEXED:
-							str = 'general.no';
-							break;
-						case Zotero.Fulltext.INDEX_STATE_PARTIAL:
-							str += 'partial';
-							break;
-						case Zotero.Fulltext.INDEX_STATE_INDEXED:
-							str = 'general.yes';
-							break;
-					}
-					this._id("index-status-label").value = Zotero.getString('fulltext.indexState.indexed')
-						+ Zotero.getString('punctuation.colon');
-					indexStatus.value = Zotero.getString(str);
-					
-					// Reindex button tooltip (string stored in zotero.properties)
-					var str = Zotero.getString('pane.items.menu.reindexItem');
-					reindexButton.setAttribute('tooltiptext', str);
-					
-					if (this.editable && Zotero.Fulltext.canReindex(this.item.id)) {
-						reindexButton.setAttribute('hidden', false);
-					}
-					else {
-						reindexButton.setAttribute('hidden', true);
-					}
-				]]>
-				</body>
+				<body><![CDATA[
+					return Zotero.spawn(function* () {
+						var indexStatus = this._id('index-status');
+						var reindexButton = this._id('reindex');
+						
+						var status = yield Zotero.Fulltext.getIndexedState(this.item)
+							.tap(() => Zotero.Promise.check(this.item));
+						var str = 'fulltext.indexState.';
+						switch (status) {
+							case Zotero.Fulltext.INDEX_STATE_UNAVAILABLE:
+								str += 'unavailable';
+								break;
+							case Zotero.Fulltext.INDEX_STATE_UNINDEXED:
+								str = 'general.no';
+								break;
+							case Zotero.Fulltext.INDEX_STATE_PARTIAL:
+								str += 'partial';
+								break;
+							case Zotero.Fulltext.INDEX_STATE_INDEXED:
+								str = 'general.yes';
+								break;
+						}
+						this._id("index-status-label").value = Zotero.getString('fulltext.indexState.indexed')
+							+ Zotero.getString('punctuation.colon');
+						indexStatus.value = Zotero.getString(str);
+						
+						// Reindex button tooltip (string stored in zotero.properties)
+						var str = Zotero.getString('pane.items.menu.reindexItem');
+						reindexButton.setAttribute('tooltiptext', str);
+						
+						var show = false;
+						if (this.editable) {
+							show = yield Zotero.Fulltext.canReindex(this.item)
+								.tap(() => Zotero.Promise.check(this.item));
+						}
+						
+						if (show) {
+							reindexButton.setAttribute('hidden', false);
+						}
+						else {
+							reindexButton.setAttribute('hidden', true);
+						}
+					}, this);
+				]]></body>
 			</method>
 			
 			
@@ -538,7 +599,7 @@
 							<label id="index-status-label"/>
 							<hbox>
 								<label id="index-status"/>
-								<toolbarbutton id="reindex" oncommand="this.hidden = true; setTimeout(function () { ZoteroPane_Local.reindexItem(); }, 50)"/>
+								<image id="reindex" onclick="this.hidden = true; setTimeout(function () { ZoteroPane_Local.reindexItem(); }, 50)"/>
 							</hbox>
 						</row>
 					</rows>

@@ -71,19 +71,25 @@ Zotero.Cite = {
 	 * @param {String} format The format of the output (html, text, or rtf)
 	 * @return {String} Bibliography or item list in specified format
 	 */
-	"makeFormattedBibliographyOrCitationList":function(style, items, format, asCitationList) {
-		var cslEngine = style.getCiteProc();
+	"makeFormattedBibliographyOrCitationList":function(cslEngine, items, format, asCitationList) {
 		cslEngine.setOutputFormat(format);
-		cslEngine.updateItems([item.id for each(item in items)]);
-				
+		cslEngine.updateItems(items.map(item => item.id));
+		 		
 		if(!asCitationList) {
 			var bibliography = Zotero.Cite.makeFormattedBibliography(cslEngine, format);
 			if(bibliography) return bibliography;
 		}
 		
-		var styleClass = style.class;
-		var citations = [cslEngine.appendCitationCluster({"citationItems":[{"id":item.id}], "properties":{}}, true)[0][1]
-			for each(item in items)];
+		var styleClass = cslEngine.opt.class;
+		var citations=[];
+		for (var i=0, ilen=items.length; i<ilen; i++) {
+			var item = items[i];
+			var outList = cslEngine.appendCitationCluster({"citationItems":[{"id":item.id}], "properties":{}}, true);
+			for (var j=0, jlen=outList.length; j<jlen; j++) {
+				var citationPos = outList[j][0];
+				citations[citationPos] = outList[j][1];
+			}
+		}
 		
 		if(styleClass == "note") {
 			if(format == "html") {
@@ -229,7 +235,7 @@ Zotero.Cite = {
 			var rightPadding = .5;
 			
 			// div.csl-left-margin
-			for each(var div in leftMarginDivs) {
+			for (let div of leftMarginDivs) {
 				var divStyle = div.getAttribute("style");
 				if(!divStyle) divStyle = "";
 				
@@ -246,7 +252,7 @@ Zotero.Cite = {
 			}
 			
 			// div.csl-right-inline
-			for each(var div in Zotero.Utilities.xpath(doc, '//div[@class="csl-right-inline"]')) {
+			for (let div of Zotero.Utilities.xpath(doc, '//div[@class="csl-right-inline"]')) {
 				var divStyle = div.getAttribute("style");
 				if(!divStyle) divStyle = "";
 				
@@ -260,7 +266,7 @@ Zotero.Cite = {
 			}
 			
 			// div.csl-indent
-			for each(var div in Zotero.Utilities.xpath(doc, '//div[@class="csl-indent"]')) {
+			for (let div of Zotero.Utilities.xpath(doc, '//div[@class="csl-indent"]')) {
 				div.setAttribute("style", "margin: .5em 0 0 2em; padding: 0 0 .2em .5em; border-left: 5px solid #ccc;");
 			}
 			
@@ -291,7 +297,7 @@ Zotero.Cite = {
 		var slashIndex;
 		
 		if(id instanceof Array) {
-			return [Zotero.Cite.getItem(anId) for each(anId in id)];
+			return id.map(anId => Zotero.Cite.getItem(anId));
 		} else if(typeof id === "string" && (slashIndex = id.indexOf("/")) !== -1) {		
 			var sessionID = id.substr(0, slashIndex),
 				session = Zotero.Integration.sessions[sessionID],
@@ -405,32 +411,59 @@ Zotero.Cite.getAbbreviation = new function() {
 			var words = normalizedKey.split(/([ \-])/);
 
 			if(words.length > 1) {
+				var lcWords = [];
+				for(var j=0; j<words.length; j+=2) {
+					lcWords[j] = lookupKey(words[j]);
+				}
 				for(var j=0; j<words.length; j+=2) {
 					var word = words[j],
-						lcWord = lookupKey(word),
-						newWord = undefined;
-
+						lcWord = lcWords[j],
+						newWord = undefined,
+						exactMatch = false;
+					
 					for(var i=0; i<jurisdictions.length && newWord === undefined; i++) {
 						if(!(jur = abbreviations[jurisdictions[i]])) continue;
 						if(!(cat = jur[category+"-word"])) continue;
 						
-						// Complete match
 						if(cat.hasOwnProperty(lcWord)) {
+							// Complete match
 							newWord = cat[lcWord];
+							exactMatch = true;
+						} else if(lcWord.charAt(lcWord.length-1) == 's' && cat.hasOwnProperty(lcWord.substr(0, lcWord.length-1))) {
+							// Try dropping 's'
+							newWord = cat[lcWord.substr(0, lcWord.length-1)];
+							exactMatch = true;
 						} else {
-							// Partial match
-							for(var k=1; k<=word.length && newWord === undefined; k++) {
-								newWord = cat[lcWord.substr(0, k)+"-"];
-								if(newWord && word.length - newWord.length < 1) {
-									newWord = undefined;
+							if(j < words.length-2) {
+								// Two-word match
+								newWord = cat[lcWord+words[j+1]+lcWords[j+2]];
+								if(newWord !== undefined) {
+									words.splice(j+1, 2);
+									lcWords.splice(j+1, 2);
+									exactMatch = true;
+								}
+							}
+
+							if(newWord === undefined) {
+								// Partial match
+								for(var k=lcWord.length; k>0 && newWord === undefined; k--) {
+									newWord = cat[lcWord.substr(0, k)+"-"];
 								}
 							}
 						}
 					}
-
+					
+					// Don't substitute with a longer word
+					if(newWord && !exactMatch && word.length - newWord.length < 1) {
+						newWord = word;
+					}
+					
 					// Fall back to full word
 					if(newWord === undefined) newWord = word;
-
+					
+					// Don't discard last word (e.g. Climate of the Past => Clim. Past)
+					if(!newWord && j == words.length-1) newWord = word;
+					
 					words[j] = newWord.substr(0, 1).toUpperCase() + newWord.substr(1);
 				}
 				abbreviation = words.join("").replace(/\s+/g, " ").trim();
@@ -439,10 +472,8 @@ Zotero.Cite.getAbbreviation = new function() {
 			}
 		}
 
-		if(!abbreviation || abbreviation === key) {
-			Zotero.debug("No abbreviation found for "+key);
-			return;
-		}
+		if(!abbreviation) abbreviation = key; //this should never happen, but just in case
+		
 		Zotero.debug("Abbreviated "+key+" as "+abbreviation);
 		
 		// Add to jurisdiction object
@@ -498,100 +529,23 @@ Zotero.Cite.System.prototype = {
 			throw "Zotero.Cite.System.retrieveItem called on non-item "+item;
 		}
 		
-		// don't return URL or accessed information for journal articles if a
-		// pages field exists
-		var itemType = Zotero.ItemTypes.getName(zoteroItem.itemTypeID);
-		var cslType = CSL_TYPE_MAPPINGS[itemType];
-		if(!cslType) cslType = "article";
-		var ignoreURL = ((zoteroItem.getField("accessDate", true, true) || zoteroItem.getField("url", true, true)) &&
-				["journalArticle", "newspaperArticle", "magazineArticle"].indexOf(itemType) !== -1
+		var cslItem = Zotero.Utilities.itemToCSLJSON(zoteroItem);
+		
+		// TEMP: citeproc-js currently expects the id property to be the item DB id
+		cslItem.id = zoteroItem.id;
+		
+		if (!Zotero.Prefs.get("export.citePaperJournalArticleURL")) {
+			var itemType = Zotero.ItemTypes.getName(zoteroItem.itemTypeID);
+			// don't return URL or accessed information for journal articles if a
+			// pages field exists
+			if (["journalArticle", "newspaperArticle", "magazineArticle"].indexOf(itemType) !== -1
 				&& zoteroItem.getField("pages")
-				&& !Zotero.Prefs.get("export.citePaperJournalArticleURL"));
-		
-		var cslItem = {
-			'id':zoteroItem.id,
-			'type':cslType
-		};
-		
-		// get all text variables (there must be a better way)
-		// TODO: does citeproc-js permit short forms?
-		for(var variable in CSL_TEXT_MAPPINGS) {
-			var fields = CSL_TEXT_MAPPINGS[variable];
-			if(variable == "URL" && ignoreURL) continue;
-			for each(var field in fields) {
-				var value = zoteroItem.getField(field, false, true).toString();
-				if(value != "") {
-					// Strip enclosing quotes
-					if(value.match(/^".+"$/)) {
-						value = value.substr(1, value.length-2);
-					}
-					cslItem[variable] = value;
-					break;
-				}
+			) {
+				delete cslItem.URL;
+				delete cslItem.accessed;
 			}
 		}
 		
-		// separate name variables
-		var authorID = Zotero.CreatorTypes.getPrimaryIDForType(zoteroItem.itemTypeID);
-		var creators = zoteroItem.getCreators();
-		for each(var creator in creators) {
-			if(creator.creatorTypeID == authorID) {
-				var creatorType = "author";
-			} else {
-				var creatorType = Zotero.CreatorTypes.getName(creator.creatorTypeID);
-			}
-			
-			var creatorType = CSL_NAMES_MAPPINGS[creatorType];
-			if(!creatorType) continue;
-			
-			var nameObj = {'family':creator.ref.lastName, 'given':creator.ref.firstName};
-			
-			if(cslItem[creatorType]) {
-				cslItem[creatorType].push(nameObj);
-			} else {
-				cslItem[creatorType] = [nameObj];
-			}
-		}
-		
-		// get date variables
-		for(var variable in CSL_DATE_MAPPINGS) {
-			var date = zoteroItem.getField(CSL_DATE_MAPPINGS[variable], false, true);
-			if(date) {
-				var dateObj = Zotero.Date.strToDate(date);
-				// otherwise, use date-parts
-				var dateParts = [];
-				if(dateObj.year) {
-					// add year, month, and day, if they exist
-					dateParts.push(dateObj.year);
-					if(dateObj.month !== undefined) {
-						dateParts.push(dateObj.month+1);
-						if(dateObj.day) {
-							dateParts.push(dateObj.day);
-						}
-					}
-					cslItem[variable] = {"date-parts":[dateParts]};
-					
-					// if no month, use season as month
-					if(dateObj.part && !dateObj.month) {
-						cslItem[variable].season = dateObj.part;
-					}
-				} else {
-					// if no year, pass date literally
-					cslItem[variable] = {"literal":date};
-				}
-			}
-		}
-
-		// extract PMID
-		var extra = zoteroItem.getField("extra", false, true);
-		if(typeof extra === "string") {
-			var m = /(?:^|\n)PMID:\s*([0-9]+)/.exec(extra);
-			if(m) cslItem.PMID = m[1];
-			m = /(?:^|\n)PMCID:\s*([0-9]+)/.exec(extra);
-			if(m) cslItem.PMCID = m[1];
-		}
-		
-		//this._cache[zoteroItem.id] = cslItem;
 		return cslItem;
 	},
 

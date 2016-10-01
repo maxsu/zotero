@@ -32,8 +32,7 @@ var io;
  * io - used for input/output (dataOut is list of item IDs)
  * sourcesOnly - whether only sources should be shown in the window
  */
-function doLoad()
-{
+var doLoad = Zotero.Promise.coroutine(function* () {
 	// Set font size from pref
 	var sbc = document.getElementById('zotero-select-items-container');
 	Zotero.setFontSize(sbc);
@@ -45,12 +44,17 @@ function doLoad()
 	
 	collectionsView = new Zotero.CollectionTreeView();
 	// Don't show Commons when citing
-	collectionsView.hideSources = ['duplicates', 'trash', 'commons'];
+	collectionsView.hideSources = ['duplicates', 'trash', 'feeds'];
 	document.getElementById('zotero-collections-tree').view = collectionsView;
+	
+	var deferred = Zotero.Promise.defer();
+	collectionsView.addEventListener('load', () => deferred.resolve());
+	yield deferred.promise;
+	
 	if(io.select) itemsView.selectItem(io.select);
 	
 	Zotero.updateQuickSearchBox(document);
-}
+});
 
 function doUnload()
 {
@@ -66,17 +70,11 @@ function onCollectionSelected()
 
 	if(collectionsView.selection.count == 1 && collectionsView.selection.currentIndex != -1)
 	{
-		var collection = collectionsView._getItemAtRow(collectionsView.selection.currentIndex);
+		var collection = collectionsView.getRow(collectionsView.selection.currentIndex);
 		collection.setSearch('');
 		
-		try {
-			Zotero.UnresponsiveScriptIndicator.disable();
-			itemsView = new Zotero.ItemTreeView(collection, (window.arguments[1] ? true : false));
-			document.getElementById('zotero-items-tree').view = itemsView;
-		}
-		finally {
-			Zotero.UnresponsiveScriptIndicator.enable();
-		}
+		itemsView = new Zotero.ItemTreeView(collection, (window.arguments[1] ? true : false));
+		document.getElementById('zotero-items-tree').view = itemsView;
 		
 		if (collection.isLibrary()) {
 			Zotero.Prefs.set('lastViewedFolder', 'L');

@@ -74,7 +74,7 @@ Zotero.OpenURL = new function() {
 			
 			if(resolver.getElementsByTagName("Z39.88-2004").length > 0) {
 				var version = "1.0";
-			} else if(resolver.getElementsByTagName("OpenUrl 0.1").length > 0) {
+			} else if(resolver.getElementsByTagName("OpenURL_0.1").length > 0) {
 				var version = "0.1";
 			} else {
 				continue;
@@ -105,8 +105,8 @@ Zotero.OpenURL = new function() {
 			}
 		}
 		
-		if(item.toArray) {
-			item = item.toArray();
+		if (item.toJSON) {
+			item = item.toJSON();
 		}
 		
 		// find pmid
@@ -136,56 +136,76 @@ Zotero.OpenURL = new function() {
 			}
 			_mapTag("article", "genre");
 			
-			if(item.title) _mapTag(item.title, "atitle")		
-			if(item.publicationTitle) _mapTag(item.publicationTitle, (version == "0.1" ? "title" : "jtitle"))		
-			if(item.journalAbbreviation) _mapTag(item.journalAbbreviation, "stitle");
-			if(item.volume) _mapTag(item.volume, "volume");
-			if(item.issue) _mapTag(item.issue, "issue");
-		} else if(item.itemType == "book" || item.itemType == "bookSection" || item.itemType == "conferencePaper") {
+			_mapTag(item.title, "atitle");
+			_mapTag(item.publicationTitle, (version == "0.1" ? "title" : "jtitle"));
+			_mapTag(item.journalAbbreviation, "stitle");
+			_mapTag(item.volume, "volume");
+			_mapTag(item.issue, "issue");
+		} else if(item.itemType == "book" || item.itemType == "bookSection" || item.itemType == "conferencePaper" || item.itemType == "report") {
 			if(version === "1.0") {
 				_mapTag("info:ofi/fmt:kev:mtx:book", "rft_val_fmt", true);
 			}
 			
 			if(item.itemType == "book") {
 				_mapTag("book", "genre");
-				if(item.title) _mapTag(item.title, (version == "0.1" ? "title" : "btitle"));
+				_mapTag(item.title, (version == "0.1" ? "title" : "btitle"));
 			} else if (item.itemType == "conferencePaper") {
 				_mapTag("proceeding", "genre");
-				if(item.title) _mapTag(item.title, "atitle")		
-				if(item.proceedingsTitle) _mapTag(item.proceedingsTitle, (version == "0.1" ? "title" : "btitle"));
+				_mapTag(item.title, "atitle");
+				_mapTag(item.proceedingsTitle, (version == "0.1" ? "title" : "btitle"));
+			} else if (item.itemType == "report") {
+				_mapTag("report", "genre");
+				_mapTag(item.seriesTitle, "series");
+				_mapTag(item.title, (version == "0.1" ? "title" : "btitle"));
 			} else {
 				_mapTag("bookitem", "genre");
-				if(item.title) _mapTag(item.title, "atitle")		
-				if(item.publicationTitle) _mapTag(item.publicationTitle, (version == "0.1" ? "title" : "btitle"));
+				_mapTag(item.title, "atitle");
+				_mapTag(item.publicationTitle, (version == "0.1" ? "title" : "btitle"));
 			}
 			
-			if(item.place) _mapTag(item.place, "place");
-			if(item.publisher) _mapTag(item.publisher, "publisher")		
-			if(item.edition) _mapTag(item.edition, "edition");
-			if(item.series) _mapTag(item.series, "series");
+			_mapTag(item.place, "place");
+			_mapTag(item.publisher, "publisher");
+			_mapTag(item.edition, "edition");
+			_mapTag(item.series, "series");
 		} else if(item.itemType == "thesis" && version == "1.0") {
 			_mapTag("info:ofi/fmt:kev:mtx:dissertation", "rft_val_fmt", true);
 			
-			if(item.title) _mapTag(item.title, "title");
-			if(item.publisher) _mapTag(item.publisher, "inst");
-			if(item.type) _mapTag(item.type, "degree");
+			_mapTag(item.title, "title");
+			_mapTag(item.publisher, "inst");
+			_mapTag(item.type, "degree");
 		} else if(item.itemType == "patent" && version == "1.0") {
 			_mapTag("info:ofi/fmt:kev:mtx:patent", "rft_val_fmt", true);
 			
-			if(item.title) _mapTag(item.title, "title");
-			if(item.assignee) _mapTag(item.assignee, "assignee");
-			if(item.patentNumber) _mapTag(item.patentNumber, "number");
+			_mapTag(item.title, "title");
+			_mapTag(item.assignee, "assignee");
+			_mapTag(item.patentNumber, "number");
 			
 			if(item.issueDate) {
 				_mapTag(Zotero.Date.strToISO(item.issueDate), "date");
 			}
 		} else {
-			return false;
+			//we map as much as possible to DC for all other types. This will export some info
+			//and work very nicely on roundtrip. All of these fields legal for mtx:dc according to
+			//http://alcme.oclc.org/openurl/servlet/OAIHandler/extension?verb=GetMetadata&metadataPrefix=mtx&identifier=info:ofi/fmt:kev:mtx:dc
+			_mapTag("info:ofi/fmt:kev:mtx:dc", "rft_val_fmt", true);
+			//lacking something better we use Zotero item types here; no clear alternative and this works for roundtrip
+			_mapTag(item.itemType, "type");
+			_mapTag(item.title, "title");
+			_mapTag(item.publicationTitle, "source");
+			_mapTag(item.rights, "rights");
+			_mapTag(item.publisher, "publisher");
+			_mapTag(item.abstractNote, "description");
+			if(item.DOI){
+				 _mapTag("urn:doi:" + item.DOI, "identifier");
+			}
+			else if(item.url){
+				 _mapTag(item.url, "identifier");
+			}
 		}
 		
 		if(item.creators && item.creators.length) {
 			// encode first author as first and last
-			var firstCreator = item.creators[0];
+			let firstCreator = Zotero.Items.getFirstCreatorFromJSON(item);
 			if(item.itemType == "patent") {
 				_mapTag(firstCreator.firstName, "invfirst");
 				_mapTag(firstCreator.lastName, "invlast");
@@ -216,12 +236,19 @@ Zotero.OpenURL = new function() {
 				if(pages.length >= 2) _mapTag(pages[1], "epage");
 			}
 		}
-		if(item.numPages) _mapTag(item.numPages, "tpages");
-		if(item.ISBN) _mapTag(item.ISBN, "isbn");
-		if(item.ISSN) _mapTag(item.ISSN, "issn");
-		
+		_mapTag(item.numPages, "tpages");
+		_mapTag(item.ISBN, "isbn");
+		_mapTag(item.ISSN, "issn");
+		_mapTag(item.language, "language");
 		if(asObj) return entries;
 		return entries.join("&");
+	}
+
+	function _cloneIfNecessary(obj1, obj2) {
+		if(Zotero.isFx && !Zotero.isBookmarklet && Zotero.platformMajorVersion >= 32) {
+			return Components.utils.cloneInto(obj1, obj2);
+		}
+		return obj1;
 	}
 	
 	/*
@@ -360,14 +387,14 @@ Zotero.OpenURL = new function() {
 				if(complexAu.length && !lastCreator.lastName && !lastCreator.institutional) {
 					lastCreator.lastName = value;
 				} else {
-					complexAu.push({lastName:value, creatorType:(key == "rft.aulast" ? "author" : "inventor"), offset:item.creators.length});
+					complexAu.push(_cloneIfNecessary({lastName:value, creatorType:(key == "rft.aulast" ? "author" : "inventor"), offset:item.creators.length}, item));
 				}
 			} else if(key == "rft.aufirst" || key == "rft.invfirst") {
 				var lastCreator = complexAu[complexAu.length-1];
 				if(complexAu.length && !lastCreator.firstName && !lastCreator.institutional) {
 					lastCreator.firstName = value;
 				} else {
-					complexAu.push({firstName:value, creatorType:(key == "rft.aufirst" ? "author" : "inventor"), offset:item.creators.length});
+					complexAu.push(_cloneIfNecessary({firstName:value, creatorType:(key == "rft.aufirst" ? "author" : "inventor"), offset:item.creators.length}, item));
 				}
 			} else if(key == "rft.au" || key == "rft.creator" || key == "rft.contributor" || key == "rft.inventor") {
 				if(key == "rft.contributor") {
@@ -378,13 +405,9 @@ Zotero.OpenURL = new function() {
 					var type = "author";
 				}
 				
-				if(value.indexOf(",") !== -1) {
-					item.creators.push(Zotero.Utilities.cleanAuthor(value, type, true));
-				} else {
-					item.creators.push(Zotero.Utilities.cleanAuthor(value, type, false));
-				}
+				item.creators.push(_cloneIfNecessary(Zotero.Utilities.cleanAuthor(value, type, value.indexOf(",") !== -1), item));
 			} else if(key == "rft.aucorp") {
-				complexAu.push({lastName:value, isInstitution:true});
+				complexAu.push(_cloneIfNecessary({lastName:value, isInstitution:true}, item));
 			} else if(key == "rft.isbn" && !item.ISBN) {
 				item.ISBN = value;
 			} else if(key == "rft.pub" || key == "rft.publisher") {
@@ -396,7 +419,11 @@ Zotero.OpenURL = new function() {
 			} else if(key == "rft.edition") {
 				item.edition = value;
 			} else if(key == "rft.series") {
-				item.series = value;
+				if(item.itemType == "report") {
+					item.seriesTitle = value;
+				} else {
+					item.series = value;
+				}
 			} else if(item.itemType == "thesis") {
 				if(key == "rft.inst") {
 					item.publisher = value;
@@ -411,7 +438,10 @@ Zotero.OpenURL = new function() {
 				} else if(key == "rft.appldate") {
 					item.date = value;
 				}
-			} else if(format == "info:ofi/fmt:kev:mtx:dc") {
+			} else {
+				// The following keys are technically only valid in Dublin Core
+				// (i.e., format == "info:ofi/fmt:kev:mtx:dc") but in practice
+				// 'format' is not always set
 				if(key == "rft.identifier") {
 					if(value.length > 8) {	// we could check length separately for
 											// each type, but all of these identifiers
@@ -451,17 +481,18 @@ Zotero.OpenURL = new function() {
 			var pushMe = true;
 			var offset = complexAu[i].offset;
 			delete complexAu[i].offset;
-			for(var j=0; j<item.creators.length; j++) {
-				// if there's a plain author that is close to this author (the
-				// same last name, and the same first name up to a point), keep
-				// the plain author, since it might have a middle initial
-				if(item.creators[j].lastName == complexAu[i].lastName &&
-				   (item.creators[j].firstName == complexAu[i].firstName == "" ||
-				   (item.creators[j].firstName.length >= complexAu[i].firstName.length &&
-				   item.creators[j].firstName.substr(0, complexAu[i].firstName.length) == complexAu[i].firstName))) {
-					pushMe = false;
-					break;
-				}
+			for (var j = 0; j < item.creators.length; j++) {
+			    // if there's a plain author that is close to this author (the
+			    // same last name, and the same first name up to a point), keep
+			    // the plain author, since it might have a middle initial
+			    if (item.creators[j].lastName == complexAu[i].lastName &&
+			        item.creators[j].firstName &&
+			        ((item.creators[j].firstName == "" && complexAu[i].firstName == "") ||
+			            (item.creators[j].firstName.length >= complexAu[i].firstName.length &&
+			                item.creators[j].firstName.substr(0, complexAu[i].firstName.length) == complexAu[i].firstName))) {
+			        pushMe = false;
+			        break;
+			    }
 			}
 			// Splice in the complex creator at the correct location,
 			// accounting for previous insertions

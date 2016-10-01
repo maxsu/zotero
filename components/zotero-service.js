@@ -44,39 +44,48 @@ const xpcomFilesAll = [
 	'progressWindow',
 	'translation/translate',
 	'translation/translate_firefox',
+	'translation/translator',
 	'translation/tlds',
 	'utilities',
+	'isbn',
 	'utilities_internal',
 	'utilities_translate'
 ];
 
 /** XPCOM files to be loaded only for local translation and DB access **/
 const xpcomFilesLocal = [
+	'libraryTreeView',
 	'collectionTreeView',
+	'collectionTreeRow',
 	'annotate',
+	'api',
 	'attachments',
 	'cite',
 	'cookieSandbox',
-	'data_access',
+	'data/library',
+	'data/libraries',
+	'data/dataObject',
 	'data/dataObjects',
+	'data/dataObjectUtilities',
 	'data/cachedTypes',
+	'data/notes',
 	'data/item',
 	'data/items',
 	'data/collection',
 	'data/collections',
-	'data/creator',
+	'data/feedItem',
+	'data/feedItems',
+	'data/feed',
+	'data/feeds',
 	'data/creators',
 	'data/group',
 	'data/groups',
 	'data/itemFields',
-	'data/notes',
-	'data/libraries',
-	'data/relation',
 	'data/relations',
-	'data/tag',
 	'data/tags',
 	'db',
 	'duplicates',
+	'feedReader',
 	'fulltext',
 	'id',
 	'integration',
@@ -87,24 +96,35 @@ const xpcomFilesLocal = [
 	'proxy',
 	'quickCopy',
 	'report',
+	'router',
 	'schema',
 	'search',
 	'server',
 	'style',
 	'sync',
+	'sync/syncAPIClient',
+	'sync/syncEngine',
+	'sync/syncExceptions',
+	'sync/syncEventListeners',
+	'sync/syncFullTextEngine',
+	'sync/syncLocal',
+	'sync/syncRunner',
+	'sync/syncUtilities',
 	'storage',
+	'storage/storageEngine',
+	'storage/storageLocal',
+	'storage/storageRequest',
+	'storage/storageResult',
+	'storage/storageUtilities',
 	'storage/streamListener',
-	'storage/queueManager',
-	'storage/queue',
-	'storage/request',
-	'storage/mode',
 	'storage/zfs',
 	'storage/webdav',
 	'syncedSettings',
 	'timeline',
 	'uri',
+	'users',
 	'translation/translate_item',
-	'translation/translator',
+	'translation/translators',
 	'server_connector'
 ];
 
@@ -120,10 +140,12 @@ const xpcomFilesConnector = [
 ];
 
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
+Components.utils.import("resource://gre/modules/Services.jsm");
 
 var instanceID = (new Date()).getTime();
 var isFirstLoadThisSession = true;
 var zContext = null;
+var zInitOptions = {};
 
 ZoteroContext = function() {}
 ZoteroContext.prototype = {
@@ -156,7 +178,11 @@ ZoteroContext.prototype = {
 	 * Convenience method to replicate window.setTimeout()
 	 **/
 	"setTimeout":function setTimeout(func, ms){
-		this.Zotero.setTimeout(func, ms);
+		return this.Zotero.setTimeout(func, ms);
+	},
+	
+	"clearTimeout":function setTimeout(id) {
+		this.Zotero.clearTimeout(id);
 	},
 	
 	/**
@@ -164,14 +190,33 @@ ZoteroContext.prototype = {
 	 */
 	"switchConnectorMode":function(isConnector) {
 		if(isConnector !== this.isConnector) {
-			zContext.Zotero.shutdown();
-			
-			// create a new zContext
-			makeZoteroContext(isConnector);
-			zContext.Zotero.init();
+			Services.obs.notifyObservers(zContext.Zotero, "zotero-before-reload", isConnector ? "connector" : "full");
+			zContext.Zotero.shutdown().then(function() {
+				// create a new zContext
+				makeZoteroContext(isConnector);
+				return zContext.Zotero.init(zInitOptions);
+			}).done();
 		}
 		
 		return zContext;
+	},
+
+	/**
+	 * Shuts down Zotero, calls a callback (that may return a promise),
+	 * then reinitializes Zotero. Returns a promise that is resolved
+	 * when this process completes.
+	 */
+	"reinit":function(cb, isConnector, options = {}) {
+		Services.obs.notifyObservers(zContext.Zotero, "zotero-before-reload", isConnector ? "connector" : "full");
+		return zContext.Zotero.shutdown().then(function() {
+			return cb ? cb() : false;
+		}).finally(function() {
+			makeZoteroContext(isConnector);
+			var o = {};
+			Object.assign(o, zInitOptions);
+			Object.assign(o, options);
+			zContext.Zotero.init(o);
+		});
 	}
 };
 
@@ -204,6 +249,7 @@ function makeZoteroContext(isConnector) {
 	
 	// Load CiteProc into Zotero.CiteProc namespace
 	zContext.Zotero.CiteProc = {"Zotero":zContext.Zotero};
+	subscriptLoader.loadSubScript("chrome://zotero/content/xpcom/citeproc-prereqs.js", zContext.Zotero.CiteProc);
 	subscriptLoader.loadSubScript("chrome://zotero/content/xpcom/citeproc.js", zContext.Zotero.CiteProc);
 	
 	// Load XRegExp object into Zotero.XRegExp
@@ -240,11 +286,13 @@ function makeZoteroContext(isConnector) {
 	}
 	
 	// Load xpcomFiles for specific mode
-	for each(var xpcomFile in (isConnector ? xpcomFilesConnector : xpcomFilesLocal)) {
+	for (let xpcomFile of (isConnector ? xpcomFilesConnector : xpcomFilesLocal)) {
 		try {
 			subscriptLoader.loadSubScript("chrome://zotero/content/xpcom/" + xpcomFile + ".js", zContext);
 		}
 		catch (e) {
+			dump("Error loading " + xpcomFile + ".js\n\n");
+			dump(e + "\n\n");
 			Components.utils.reportError("Error loading " + xpcomFile + ".js", zContext);
 			throw (e);
 		}
@@ -271,9 +319,6 @@ function makeZoteroContext(isConnector) {
 		subscriptLoader.loadSubScript("chrome://zotero/content/xpcom/standalone.js", zContext);
 	}
 	
-	// load nsTransferable (query: do we still use this?)
-	subscriptLoader.loadSubScript("chrome://global/content/nsTransferable.js", zContext);
-	
 	// add connector-related properties
 	zContext.Zotero.isConnector = isConnector;
 	zContext.Zotero.instanceID = instanceID;
@@ -289,28 +334,35 @@ function ZoteroService() {
 		
 		if(isFirstLoadThisSession) {
 			makeZoteroContext(false);
-			try {
-				zContext.Zotero.init();
-			} catch(e) {
-				if(e === "ZOTERO_SHOULD_START_AS_CONNECTOR") {
+			zContext.Zotero.init(zInitOptions)
+			.catch(function (e) {
+				if (e === "ZOTERO_SHOULD_START_AS_CONNECTOR") {
 					// if Zotero should start as a connector, reload it
-					zContext.Zotero.shutdown();
-					makeZoteroContext(true);
-					zContext.Zotero.init();
-				} else {
-					dump(e.toSource());
-					Components.utils.reportError(e);
-					throw e;
+					return zContext.Zotero.shutdown()
+					.then(function() {
+						makeZoteroContext(true);
+						return zContext.Zotero.init(zInitOptions);
+					})
 				}
-			}
+				
+				dump(e + "\n\n");
+				Components.utils.reportError(e);
+				throw e;
+			})
+			.then(function () {
+				zContext.Zotero.debug("Initialized in "+(Date.now() - start)+" ms");
+				isFirstLoadThisSession = false;
+			});
 		}
-		isFirstLoadThisSession = false;	// no longer first load
+		else {
+			zContext.Zotero.debug("Already initialized");
+		}
 		this.wrappedJSObject = zContext.Zotero;
-		
-		zContext.Zotero.debug("Initialized in "+(Date.now() - start)+" ms");
 	} catch(e) {
-		var msg = typeof e == 'string' ? e : e.name;
-		dump(e + "\n\n");
+		var msg = e instanceof Error
+			? e.name + ': ' + e.message + '\n' + e.fileName + ':' + e.lineNumber + '\n' + e.stack
+			: '' + e;
+		dump(msg + '\n');
 		Components.utils.reportError(e);
 		throw e;
 	}
@@ -344,6 +396,16 @@ function ZoteroCommandLineHandler() {}
 ZoteroCommandLineHandler.prototype = {
 	/* nsICommandLineHandler */
 	handle : function(cmdLine) {
+		// Force debug output
+		if (cmdLine.handleFlag("ZoteroDebug", false)) {
+			zInitOptions.forceDebugLog = true;
+		}
+		
+		// handler to open Zotero pane at startup in Zotero for Firefox
+		if (!isStandalone() && cmdLine.handleFlag("ZoteroPaneOpen", false)) {
+			zInitOptions.openPane = true;
+		}
+		
 		// handler for Zotero integration commands
 		// this is typically used on Windows only, via WM_COPYDATA rather than the command line
 		var agent = cmdLine.handleFlagWithParam("ZoteroIntegrationAgent", false);
@@ -418,13 +480,13 @@ ZoteroCommandLineHandler.prototype = {
 				}
 			}
 		}
-		// handler to open Zotero pane at startup in Zotero for Firefox
-		else {
-			var zPaneOpen = cmdLine.handleFlag("ZoteroPaneOpen", false);
-			if (zPaneOpen) {
-                this.Zotero.openPane = true;
-            }
-        }
+		
+		if (cmdLine.handleFlag("ZoteroAutomatedTest", false)) {
+			zInitOptions.automatedTest = true;
+		}
+		if (cmdLine.handleFlag("ZoteroSkipBundledFiles", false)) {
+			zInitOptions.skipBundledFiles = true;
+		}
 	},
 	
 	contractID: "@mozilla.org/commandlinehandler/general-startup;1?type=zotero",

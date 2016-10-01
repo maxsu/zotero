@@ -42,8 +42,8 @@ Zotero.LocateManager = new function() {
 		_jsonFile = _getLocateFile();
 		
 		if(_jsonFile.exists()) {
-			_locateEngines = [new LocateEngine(engine)
-				for each(engine in JSON.parse(Zotero.File.getContents(_jsonFile)))];
+			_locateEngines = JSON.parse(Zotero.File.getContents(_jsonFile))
+				.map(engine => new LocateEngine(engine));
 		} else {
 			this.restoreDefaultEngines();
 		}
@@ -67,8 +67,10 @@ Zotero.LocateManager = new function() {
 	/**
 	 * Gets all default search engines (not currently used)
 	 */
-	this.getDefaultEngines = function() [new LocateEngine(engine)
-				for each(engine in JSON.parse(Zotero.File.getContentsFromURL(_getDefaultFile())))];
+	this.getDefaultEngines = function () {
+		return JSON.parse(Zotero.File.getContentsFromURL(_getDefaultFile()))
+			.map(engine => new LocateEngine(engine));
+	}
 	
 	/**
 	 * Returns an array of all search engines
@@ -78,7 +80,9 @@ Zotero.LocateManager = new function() {
 	/**
 	 * Returns an array of all search engines visible that should be visible in the dropdown
 	 */
-	this.getVisibleEngines = function() [engine for each(engine in _locateEngines) if(!engine.hidden)];
+	this.getVisibleEngines = function () {
+		return _locateEngines.filter(engine => !engine.hidden);
+	}
 	
 	/**
 	 * Returns an engine with a specific name
@@ -138,7 +142,7 @@ Zotero.LocateManager = new function() {
 		this.init();
 		
 		// reload icons for default locate engines
-		for each(var engine in this.getEngines()) engine._updateIcon();
+		for (let engine of this.getEngines()) engine._updateIcon();
 	}
 	
 	/**
@@ -285,12 +289,12 @@ Zotero.LocateManager = new function() {
 				return false;
 			}
 			
-			return [encodeURIComponent(val) for each(val in itemOpenURL["rft."+param])];
+			return itemOpenURL["rft."+param].map(val => encodeURIComponent(val));
 		} else if(ns === "info:ofi/fmt:kev:mtx:ctx") {
 			if(!OPENURL_CONTEXT_MAPPINGS[param] || !itemOpenURL[OPENURL_CONTEXT_MAPPINGS[param]]) {
 				return false;
 			}
-			return [encodeURIComponent(val) for each(val in itemOpenURL[OPENURL_CONTEXT_MAPPINGS[param]])];
+			return itemOpenURL[OPENURL_CONTEXT_MAPPINGS[param]].map(val => encodeURIComponent(val));
 		} else if(ns === "http://www.zotero.org/namespaces/openSearch#") {
 			if(param === "openURL") {
 				var ctx = Zotero.OpenURL.createContextObject(item, "1.0");
@@ -328,7 +332,7 @@ Zotero.LocateManager = new function() {
 		if(obj) for(var prop in obj) this[prop] = obj[prop];
 		
 		// Queue deferred serialization whenever a property is modified
-		for each(var prop in ["alias", "name", "description", "icon", "hidden"]) {
+		for (let prop of ["alias", "name", "description", "icon", "hidden"]) {
 			this.watch(prop, _watchLocateEngineProperties);
 		}
 	}
@@ -457,7 +461,10 @@ Zotero.LocateManager = new function() {
 				} else {
 					var result = _lookupParam(item, itemAsOpenURL, me, m[1], m[2]);
 					if(result) {
-						paramsToAdd = paramsToAdd.concat([encodeURIComponent(param)+"="+encodeURIComponent(val) for(val in result)]);
+						paramsToAdd = paramsToAdd.concat(
+							result.map(val =>
+								encodeURIComponent(param) + "=" + encodeURIComponent(val))
+						);
 					} else if(m[3]) {	// if no param and it wasn't optional, return
 						return null;
 					}

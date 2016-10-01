@@ -28,13 +28,13 @@ var ZoteroAdvancedSearch = new function() {
 	this.onLoad = onLoad;
 	this.search = search;
 	this.clear = clear;
-	this.save = save;
 	this.onDblClick = onDblClick;
 	this.onUnload = onUnload;
 	
 	this.itemsView = false;
 	
 	var _searchBox;
+	var _libraryID;
 	
 	function onLoad() {
 		_searchBox = document.getElementById('zotero-search-box');
@@ -43,35 +43,34 @@ var ZoteroAdvancedSearch = new function() {
 		var sbc = document.getElementById('zotero-search-box-container');
 		Zotero.setFontSize(sbc);
 		
+		_searchBox.onLibraryChange = this.onLibraryChange;
 		var io = window.arguments[0];
-		_searchBox.search = io.dataIn.search;
+		
+		io.dataIn.search.loadPrimaryData()
+		.then(function () {
+			_searchBox.search = io.dataIn.search;
+		});
 	}
 	
 	
 	function search() {
 		_searchBox.updateSearch();
+		_searchBox.active = true;
 		
-		// A minimal implementation of Zotero.CollectionTreeView
-		var itemGroup = {
+		// A minimal implementation of Zotero.CollectionTreeRow
+		var collectionTreeRow = {
+			ref: _searchBox.search,
 			isSearchMode: function() { return true; },
-			getItems: function () {
-				//var search = _searchBox.search.clone();
-				
-				var s2 = new Zotero.Search();
-				s2.setScope(_searchBox.search);
-				
-				// FIXME: Hack to exclude group libraries for now
-				var groups = Zotero.Groups.getAll();
-				for each(var group in groups) {
-					s2.addCondition('libraryID', 'isNot', group.libraryID);
-				}
-				
-				var ids = s2.search();
+			getItems: Zotero.Promise.coroutine(function* () {
+				var search = _searchBox.search.clone();
+				search.libraryID = _libraryID;
+				var ids = yield search.search();
 				return Zotero.Items.get(ids);
-			},
+			}),
 			isLibrary: function () { return false; },
 			isCollection: function () { return false; },
 			isSearch: function () { return true; },
+			isFeed: () => false,
 			isShare: function () { return false; },
 			isTrash: function () { return false; }
 		}
@@ -80,7 +79,7 @@ var ZoteroAdvancedSearch = new function() {
 			this.itemsView.unregister();
 		}
 		
-		this.itemsView = new Zotero.ItemTreeView(itemGroup, false);
+		this.itemsView = new Zotero.ItemTreeView(collectionTreeRow, false);
 		document.getElementById('zotero-items-tree').view = this.itemsView;
 	}
 	
@@ -92,19 +91,26 @@ var ZoteroAdvancedSearch = new function() {
 		document.getElementById('zotero-items-tree').view = null;
 		
 		var s = new Zotero.Search();
-		s.addCondition('title', 'contains', '');
+		// Don't clear the selected library
+		s.libraryID = _searchBox.search.libraryID;
+		s.addCondition('title', 'contains', '')
 		_searchBox.search = s;
+		_searchBox.active = false;
 	}
 	
 	
-	function save() {
+	this.save = Zotero.Promise.coroutine(function* () {
 		_searchBox.updateSearch();
 		
 		var promptService = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
 								.getService(Components.interfaces.nsIPromptService);
 		
-		var untitled = Zotero.DB.getNextName('collections', 'collectionName',
-			Zotero.getString('pane.collections.untitled'));
+		var untitled = yield Zotero.DB.getNextName(
+			_searchBox.search.libraryID,
+			'savedSearches',
+			'savedSearchName',
+			Zotero.getString('pane.collections.untitled')
+		);
 		
 		var name = { value: untitled };
 		var result = promptService.prompt(window,
@@ -118,12 +124,22 @@ var ZoteroAdvancedSearch = new function() {
 		
 		if (!name.value)
 		{
-			newName.value = untitled;
+			name.value = untitled;
 		}
 		
 		var s = _searchBox.search.clone();
 		s.name = name.value;
-		s.save();
+		yield s.save();
+		
+		window.close()
+	});
+	
+	
+	this.onLibraryChange = function (libraryID) {
+		_libraryID = libraryID;
+		var library = Zotero.Libraries.get(libraryID);
+		var isEditable = library.editable && library.libraryType != 'publications';
+		document.getElementById('zotero-search-save').disabled = !isEditable;
 	}
 	
 	

@@ -87,6 +87,10 @@ Zotero.Date = new function(){
 	**/
 	function sqlToDate(sqldate, isUTC){
 		try {
+			if (!this.isSQLDate(sqldate) && !this.isSQLDateTime(sqldate)) {
+				throw new Error("Invalid date");
+			}
+			
 			var datetime = sqldate.split(' ');
 			var dateparts = datetime[0].split('-');
 			if (datetime[1]){
@@ -98,7 +102,7 @@ Zotero.Date = new function(){
 			
 			// Invalid date part
 			if (dateparts.length==1){
-				return false;
+				throw new Error("Invalid date part");
 			}
 			
 			if (isUTC){
@@ -180,17 +184,26 @@ Zotero.Date = new function(){
 	}
 	
 	
+	var _re8601 = /^([0-9]{4})(-([0-9]{2})(-([0-9]{2})(T([0-9]{2}):([0-9]{2})(:([0-9]{2})(\.([0-9]+))?)?(Z|(([-+])([0-9]{2}):([0-9]{2})))?)?)?)?$/;
+	
 	/**
-	 * Convert an ISO 8601–formatted UTC date/time to a JS Date
+	 * @return {Boolean} - True if string is an ISO 8601 date, false if not
+	 */
+	this.isISODate = function (str) {
+		return _re8601.test(str);
+	}
+	
+	/**
+	 * Convert an ISO 8601–formatted date/time to a JS Date
 	 *
 	 * Adapted from http://delete.me.uk/2005/03/iso8601.html (AFL-licensed)
 	 *
 	 * @param	{String}		isoDate		ISO 8601 date
-	 * @return	{Date}					JS Date
+	 * @return {Date|False} - JS Date, or false if not a valid date
 	 */
 	this.isoToDate = function (isoDate) {
-		var re8601 = /([0-9]{4})(-([0-9]{2})(-([0-9]{2})(T([0-9]{2}):([0-9]{2})(:([0-9]{2})(\.([0-9]+))?)?(Z|(([-+])([0-9]{2}):([0-9]{2})))?)?)?)?/;
-		var d = isoDate.match(re8601);
+		var d = isoDate.match(_re8601);
+		if (!d) return false;
 		
 		var offset = 0;
 		var date = new Date(d[1], 0, 1);
@@ -209,6 +222,11 @@ Zotero.Date = new function(){
 		offset -= date.getTimezoneOffset();
 		var time = (Number(date) + (offset * 60 * 1000));
 		return new Date(time);
+	}
+	
+	
+	this.isoToSQL = function (isoDate) {
+		return this.dateToSQL(this.isoToDate(isoDate), true);
 	}
 	
 	
@@ -330,6 +348,8 @@ Zotero.Date = new function(){
 				}
 				
 				if(date.month) date.month--;		// subtract one for JS style
+				else delete date.month;
+				
 				Zotero.debug("DATE: retrieved with algorithms: "+JSON.stringify(date));
 				
 				parts.push(
@@ -369,7 +389,7 @@ Zotero.Date = new function(){
 		}
 		
 		// MONTH
-		if(!date.month) {
+		if(date.month === undefined) {
 			// compile month regular expression
 			var months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul',
 				'aug', 'sep', 'oct', 'nov', 'dec'];
@@ -457,6 +477,49 @@ Zotero.Date = new function(){
 		return date;
 	}
 	
+	this.isHTTPDate = function(str) {
+		var dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+		var monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
+					"Oct", "Nov", "Dec"];
+		str = str.trim();
+		var temp = str.split(',');
+		if (temp.length > 1) {
+			var dayOfWeek = temp[0];
+			if(dayNames.indexOf(dayOfWeek) == -1) {
+				return false;
+			}
+
+			str = temp[1].trim();
+		}
+		temp = str.split(' ');
+		temp = temp.filter((t) => ! t.match(/^\s*$/));
+		if (temp.length < 5) {
+			return false;
+		}
+		if (!temp[0].trim().match(/[0-3]\d/)) {
+			return false;
+		}
+		if (monthNames.indexOf(temp[1].trim()) == -1) {
+			return false;
+		}
+		if (!temp[2].trim().match(/\d\d\d\d/)) {
+			return false;
+		}
+		temp.splice(0, 3);
+		var time = temp[0].trim().split(':');
+		if (time.length < 2) {
+			return false;
+		}
+		for (let t of time) {
+			if (!t.match(/\d\d/)) {
+				return false;
+			}
+		}
+		temp.splice(0, 1);
+		var zone = temp.join(' ').trim();
+		return !!zone.match(/([+-]\d\d\d\d|UTC?|GMT|EST|EDT|CST|CDT|MST|MDT|PST|PDT)/)
+	};
+	
 	
 	function _insertDateOrderPart(dateOrder, part, partOrder) {
 		if (!dateOrder) {
@@ -533,7 +596,7 @@ Zotero.Date = new function(){
 		
 		if(date.year) {
 			var dateString = Zotero.Utilities.lpad(date.year, "0", 4);
-			if(date.month) {
+			if (parseInt(date.month) == date.month) {
 				dateString += "-"+Zotero.Utilities.lpad(date.month+1, "0", 2);
 				if(date.day) {
 					dateString += "-"+Zotero.Utilities.lpad(date.day, "0", 2);
@@ -542,6 +605,29 @@ Zotero.Date = new function(){
 			return dateString;
 		}
 		return false;
+	}
+	
+	
+	this.sqlToISO8601 = function (sqlDate) {
+		var date = sqlDate.substr(0, 10);
+		var matches = date.match(/^([0-9]{4})\-([0-9]{2})\-([0-9]{2})/);
+		if (!matches) {
+			return false;
+		}
+		date = matches[1];
+		// Drop parts for reduced precision
+		if (matches[2] !== "00") {
+			date += "-" + matches[2];
+			if (matches[3] !== "00") {
+				date += "-" + matches[3];
+			}
+		}
+		var time = sqlDate.substr(11);
+		// TODO: validate times
+		if (time) {
+			date += "T" + time + "Z";
+		}
+		return date;
 	}
 	
 	function strToMultipart(str){
@@ -660,7 +746,7 @@ Zotero.Date = new function(){
 	function toUnixTimestamp(date) {
 		if (date === null || typeof date != 'object' ||
 				date.constructor.name != 'Date') {
-			throw ('Not a valid date in Zotero.Date.toUnixTimestamp()');
+			throw new Error(`'${date}' is not a valid date`);
 		}
 		return Math.round(date.getTime() / 1000);
 	}

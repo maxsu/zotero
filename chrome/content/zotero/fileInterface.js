@@ -39,10 +39,12 @@ var Zotero_File_Exporter = function() {
 
 /**
  * Performs the actual export operation
+ *
+ * @return {Promise}
  **/
-Zotero_File_Exporter.prototype.save = function() {
+Zotero_File_Exporter.prototype.save = Zotero.Promise.coroutine(function* () {
 	var translation = new Zotero.Translate.Export();
-	var translators = translation.getTranslators();
+	var translators = yield translation.getTranslators();
 	
 	// present options dialog
 	var io = {translators:translators}
@@ -71,33 +73,38 @@ Zotero_File_Exporter.prototype.save = function() {
 	}
 	
 	var rv = fp.show();
-	if (rv == nsIFilePicker.returnOK || rv == nsIFilePicker.returnReplace) {
-		if(this.collection) {
-			translation.setCollection(this.collection);
-		} else if(this.items) {
-			translation.setItems(this.items);
-		}
-		
-		translation.setLocation(fp.file);
-		translation.setTranslator(io.selectedTranslator);
-		translation.setDisplayOptions(io.displayOptions);
-		translation.setHandler("itemDone", Zotero_File_Interface.updateProgress);
-		translation.setHandler("done", this._exportDone);
-		Zotero.UnresponsiveScriptIndicator.disable();
-		Zotero_File_Interface.Progress.show(
-			Zotero.getString("fileInterface.itemsExported")
-		);
-		translation.translate()
+	if (rv != nsIFilePicker.returnOK && rv != nsIFilePicker.returnReplace) {
+		return;
 	}
-	return false;
-}
+	
+	if(this.collection) {
+		translation.setCollection(this.collection);
+	} else if(this.items) {
+		translation.setItems(this.items);
+	} else if(this.libraryID === undefined) {
+		throw new Error('No export configured');
+	} else {
+		translation.setLibraryID(this.libraryID);
+	}
+	
+	translation.setLocation(fp.file);
+	translation.setTranslator(io.selectedTranslator);
+	translation.setDisplayOptions(io.displayOptions);
+	translation.setHandler("itemDone", function () {
+		Zotero.updateZoteroPaneProgressMeter(translation.getProgress());
+	});
+	translation.setHandler("done", this._exportDone);
+	Zotero_File_Interface.Progress.show(
+		Zotero.getString("fileInterface.itemsExported")
+	);
+	translation.translate()
+});
 	
 /*
  * Closes the items exported indicator
  */
 Zotero_File_Exporter.prototype._exportDone = function(obj, worked) {
 	Zotero_File_Interface.Progress.close();
-	Zotero.UnresponsiveScriptIndicator.enable();
 	
 	if(!worked) {
 		window.alert(Zotero.getString("fileInterface.exportError"));
@@ -112,24 +119,26 @@ Zotero_File_Exporter.prototype._exportDone = function(obj, worked) {
 var Zotero_File_Interface = new function() {
 	var _unlock;
 	
-	this.exportFile = exportFile;
 	this.exportCollection = exportCollection;
 	this.exportItemsToClipboard = exportItemsToClipboard;
 	this.exportItems = exportItems;
-	this.importFile = importFile;
 	this.bibliographyFromCollection = bibliographyFromCollection;
 	this.bibliographyFromItems = bibliographyFromItems;
-	this.copyItemsToClipboard = copyItemsToClipboard;
-	this.copyCitationToClipboard = copyCitationToClipboard;
 	
-	/*
+	/**
 	 * Creates Zotero.Translate instance and shows file picker for file export
+	 *
+	 * @return {Promise}
 	 */
-	function exportFile() {
+	this.exportFile = Zotero.Promise.method(function () {
 		var exporter = new Zotero_File_Exporter();
-		exporter.name = Zotero.getString("pane.collections.library");
-		exporter.save();
-	}
+		exporter.libraryID = ZoteroPane_Local.getSelectedLibraryID();
+		if (exporter.libraryID === false) {
+			throw new Error('No library selected');
+		}
+		exporter.name = Zotero.Libraries.getName(exporter.libraryID);
+		return exporter.save();
+	});
 	
 	/*
 	 * exports a collection or saved search
@@ -195,7 +204,7 @@ var Zotero_File_Interface = new function() {
 	/**
 	 * Creates Zotero.Translate instance and shows file picker for file import
 	 */
-	function importFile(file, createNewCollection) {
+	this.importFile = Zotero.Promise.coroutine(function* (file, createNewCollection) {
 		if(createNewCollection === undefined) {
 			createNewCollection = true;
 		} else if(!createNewCollection) {
@@ -207,9 +216,8 @@ var Zotero_File_Interface = new function() {
 		}
 		
 		var translation = new Zotero.Translate.Import();
-		if(!file) {
-			var translators = translation.getTranslators();
-			
+		if (!file) {
+			let translators = yield translation.getTranslators();
 			const nsIFilePicker = Components.interfaces.nsIFilePicker;
 			var fp = Components.classes["@mozilla.org/filepicker;1"]
 					.createInstance(nsIFilePicker);
@@ -227,20 +235,16 @@ var Zotero_File_Interface = new function() {
 			
 			file = fp.file;
 		}
-		
+
 		translation.setLocation(file);
-		// get translators again, bc now we can check against the file
-		translation.setHandler("translators", function(obj, item) {
-			_importTranslatorsAvailable(obj, item, createNewCollection);
-		});
-		translators = translation.getTranslators();
-	}
+		yield _finishImport(translation, createNewCollection);
+	});
 	
 	
 	/**
 	 * Imports from clipboard
 	 */
-	this.importFromClipboard = function () {
+	this.importFromClipboard = Zotero.Promise.coroutine(function* () {
 		var str = Zotero.Utilities.Internal.getClipboard("text/unicode");
 		if(!str) {
 			var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
@@ -248,104 +252,22 @@ var Zotero_File_Interface = new function() {
 			ps.alert(null, "", Zotero.getString('fileInterface.importClipboardNoDataError'));
 		}
 		
-		var translate = new Zotero.Translate.Import();
-		translate.setString(str);
+		var translation = new Zotero.Translate.Import();
+		translation.setString(str);
 	
 		try {
 			if (!ZoteroPane.collectionsView.editable) {
 				ZoteroPane.collectionsView.selectLibrary(null);
 			}
 		} catch(e) {}
-		translate.setHandler("translators", function(obj, item) {
-			_importTranslatorsAvailable(obj, item, false); 
-		});
-		translators = translate.getTranslators();
-	}
+		yield _finishImport(translation, false);
+	});
 	
 	
-	function _importTranslatorsAvailable(translation, translators, createNewCollection) {
-		if(translators.length) {
-			var importCollection = null, libraryID = null;
-			
-			if(translation.location instanceof Components.interfaces.nsIFile) {
-				var leafName = translation.location.leafName;
-				var collectionName = (translation.location.isDirectory() || leafName.indexOf(".") === -1 ? leafName
-					: leafName.substr(0, leafName.lastIndexOf(".")));
-				var allCollections = Zotero.getCollections();
-				for(var i=0; i<allCollections.length; i++) {
-					if(allCollections[i].name == collectionName) {
-						collectionName += " "+(new Date()).toLocaleString();
-						break;
-					}
-				}
-			} else {
-				var collectionName = Zotero.getString("fileInterface.imported")+" "+(new Date()).toLocaleString();
-			}
-			
-			if(createNewCollection) {
-				// Create a new collection to take imported items
-				importCollection = Zotero.Collections.add(collectionName);
-			} else {
-				// Import into currently selected collection
-				try {
-					libraryID = ZoteroPane.getSelectedLibraryID();
-					importCollection = ZoteroPane.getSelectedCollection();
-				} catch(e) {}
-			}
-			
-			// import items
-			translation.setTranslator(translators[0]);
-			
-			if(importCollection) {
-				/*
-				 * Saves collections after they've been imported. Input item is of the 
-				 * type outputted by Zotero.Collection.toArray(); only receives top-level
-				 * collections
-				 */
-				translation.setHandler("collectionDone", function(obj, collection) {
-					collection.parent = importCollection.id;
-					collection.save();
-				});
-			}
-			
-			translation.setHandler("itemDone", Zotero_File_Interface.updateProgress);
-			
-			/*
-			 * closes items imported indicator
-			 */
-			translation.setHandler("done", function(obj, worked) {
-				// add items to import collection
-				if(importCollection) {
-					importCollection.addItems([item.id for each(item in obj.newItems)]);
-				}
-				
-				Zotero.DB.commitTransaction();
-				
-				Zotero_File_Interface.Progress.close();
-				Zotero.UnresponsiveScriptIndicator.enable();
-				
-				if (worked) {
-					if(importCollection) {
-						Zotero.Notifier.trigger('refresh', 'collection', importCollection.id);
-					}
-				} else {
-					if(importCollection) importCollection.erase();
-					window.alert(Zotero.getString("fileInterface.importError"));
-				}
-			});
-			Zotero.UnresponsiveScriptIndicator.disable();
-			
-			// show progress indicator
-			Zotero_File_Interface.Progress.show(
-				Zotero.getString("fileInterface.itemsImported")
-			);
-			
-			window.setTimeout(function() {
-				Zotero.DB.beginTransaction();
-				translation.translate(libraryID);
-			}, 0);
-		} else {
-			
+	var _finishImport = Zotero.Promise.coroutine(function* (translation, createNewCollection) {
+		let translators = yield translation.getTranslators();
+
+		if(!translators.length) {
 			var ps = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
 									.getService(Components.interfaces.nsIPromptService);
 			var buttonFlags = (ps.BUTTON_POS_0) * (ps.BUTTON_TITLE_OK)
@@ -362,8 +284,78 @@ var Zotero_File_Interface = new function() {
 			if (index == 1) {
 				ZoteroPane_Local.loadURI("http://zotero.org/support/kb/importing");
 			}
+			return;
 		}
-	}
+
+		let importCollection = null, libraryID = Zotero.Libraries.userLibraryID;
+		try {
+			libraryID = ZoteroPane.getSelectedLibraryID();
+			importCollection = ZoteroPane.getSelectedCollection();
+		} catch(e) {}
+
+		if(createNewCollection) {
+			// Create a new collection to take imported items
+			let collectionName;
+			if(translation.location instanceof Components.interfaces.nsIFile) {
+				let leafName = translation.location.leafName;
+				collectionName = (translation.location.isDirectory() || leafName.indexOf(".") === -1 ? leafName
+					: leafName.substr(0, leafName.lastIndexOf(".")));
+				let allCollections = Zotero.Collections.getByLibrary(libraryID);
+				for(var i=0; i<allCollections.length; i++) {
+					if(allCollections[i].name == collectionName) {
+						collectionName += " "+(new Date()).toLocaleString();
+						break;
+					}
+				}
+			} else {
+				collectionName = Zotero.getString("fileInterface.imported")+" "+(new Date()).toLocaleString();
+			}
+			importCollection = new Zotero.Collection;
+			importCollection.libraryID = libraryID;
+			importCollection.name = collectionName;
+			yield importCollection.saveTx();
+		}
+
+		translation.setTranslator(translators[0]);
+		translation.setHandler("itemDone",  function () {
+			Zotero.updateZoteroPaneProgressMeter(translation.getProgress());
+		});
+
+		// show progress indicator
+		Zotero_File_Interface.Progress.show(
+			Zotero.getString("fileInterface.itemsImported")
+		);
+
+		yield Zotero.Promise.delay(0);
+
+		let failed = false;
+		try {
+			yield translation.translate(libraryID);
+		} catch(e) {
+			Zotero.logError(e);
+			failed = true;
+		}
+		Zotero_File_Interface.Progress.close();
+
+		// Add items to import collection
+		if(importCollection) {
+			yield Zotero.DB.executeTransaction(function* () {
+				yield importCollection.addItems(translation.newItems.map(item => item.id));
+				for(let i=0; i<translation.newCollections.length; i++) {
+					let collection = translation.newCollections[i];
+					collection.parent = importCollection.id;
+					yield collection.save();
+				}
+			});
+			// 	// TODO: yield or change to .queue()
+			// 	Zotero.Notifier.trigger('refresh', 'collection', importCollection.id);
+		}
+
+		if(failed) {
+			window.alert(Zotero.getString("fileInterface.importError"));
+			return;
+		}
+	});
 	
 	/*
 	 * Creates a bibliography from a collection or saved search
@@ -405,78 +397,67 @@ var Zotero_File_Interface = new function() {
 	}
 	
 	
-	/*
-	 * Copies HTML and text bibliography entries for passed items in given style
+	/**
+	 * Copies HTML and text citations or bibliography entries for passed items in given style
 	 *
 	 * Does not check that items are actual references (and not notes or attachments)
+	 *
+	 * @param {Zotero.Item[]} items
+	 * @param {String} style - Style id string (e.g., 'http://www.zotero.org/styles/apa')
+	 * @param {String} locale - Locale (e.g., 'en-US')
+	 * @param {Boolean} [asHTML=false] - Use HTML source for plain-text data
+	 * @param {Boolean} [asCitations=false] - Copy citation cluster instead of bibliography
 	 */
-	function copyItemsToClipboard(items, style, asHTML, asCitations) {
+	this.copyItemsToClipboard = function (items, style, locale, asHTML, asCitations) {
 		// copy to clipboard
 		var transferable = Components.classes["@mozilla.org/widget/transferable;1"].
 						   createInstance(Components.interfaces.nsITransferable);
 		var clipboardService = Components.classes["@mozilla.org/widget/clipboard;1"].
 							   getService(Components.interfaces.nsIClipboard);
-		var style = Zotero.Styles.get(style);
+		style = Zotero.Styles.get(style);
+		var cslEngine = style.getCiteProc(locale);
+		
+		if (asCitations) {
+			cslEngine.updateItems(items.map(item => item.id));
+			var citation = {
+				citationItems: items.map(item => ({ id: item.id })),
+				properties: {}
+			};
+			var output = cslEngine.previewCitationCluster(citation, [], [], "html");
+		}
+		else {
+			var output = Zotero.Cite.makeFormattedBibliographyOrCitationList(cslEngine, items, "html");
+		}
 		
 		// add HTML
-		var bibliography = Zotero.Cite.makeFormattedBibliographyOrCitationList(style, items, "html", asCitations);
 		var str = Components.classes["@mozilla.org/supports-string;1"].
 				  createInstance(Components.interfaces.nsISupportsString);
-		str.data = bibliography;
+		str.data = output;
 		transferable.addDataFlavor("text/html");
-		transferable.setTransferData("text/html", str, bibliography.length*2);
+		transferable.setTransferData("text/html", str, output.length * 2);
 		
-		// add text (or HTML source)
+		// If not "Copy as HTML", add plaintext; otherwise use HTML from above and just mark as text
 		if(!asHTML) {
-			var bibliography = Zotero.Cite.makeFormattedBibliographyOrCitationList(style, items, "text", asCitations);
+			if (asCitations) {
+				output = cslEngine.previewCitationCluster(citation, [], [], "text");
+			}
+			else {
+				// Generate engine again to work around citeproc-js problem:
+				// https://github.com/zotero/zotero/commit/4a475ff3
+				cslEngine = style.getCiteProc(locale);
+				output = Zotero.Cite.makeFormattedBibliographyOrCitationList(cslEngine, items, "text");
+			}
 		}
+		
 		var str = Components.classes["@mozilla.org/supports-string;1"].
 				  createInstance(Components.interfaces.nsISupportsString);
-		str.data = bibliography;
+		str.data = output;
 		transferable.addDataFlavor("text/unicode");
-		transferable.setTransferData("text/unicode", str, bibliography.length*2);
+		transferable.setTransferData("text/unicode", str, output.length * 2);
 		
 		clipboardService.setData(transferable, null, Components.interfaces.nsIClipboard.kGlobalClipboard);
 	}
 	
-	
-	/*
-	 * Copies HTML and text citations for passed items in given style
-	 *
-	 * Does not check that items are actual references (and not notes or attachments)
-	 *
-	 * if |asHTML| is true, copy HTML source as text
-	 */
-	function copyCitationToClipboard(items, style, asHTML) {
-		// copy to clipboard
-		var transferable = Components.classes["@mozilla.org/widget/transferable;1"].
-						   createInstance(Components.interfaces.nsITransferable);
-		var clipboardService = Components.classes["@mozilla.org/widget/clipboard;1"].
-							   getService(Components.interfaces.nsIClipboard);
-		
-		var style = Zotero.Styles.get(style).getCiteProc();
-		var citation = {"citationItems":[{id:item.id} for each(item in items)], properties:{}};
-		
-		// add HTML
-		var bibliography = style.previewCitationCluster(citation, [], [], "html");
-		var str = Components.classes["@mozilla.org/supports-string;1"].
-				  createInstance(Components.interfaces.nsISupportsString);
-		str.data = bibliography;
-		transferable.addDataFlavor("text/html");
-		transferable.setTransferData("text/html", str, bibliography.length*2);
-		
-		// add text (or HTML source)
-		if(!asHTML) {
-			var bibliography = style.previewCitationCluster(citation, [], [], "text");
-		}
-		var str = Components.classes["@mozilla.org/supports-string;1"].
-				  createInstance(Components.interfaces.nsISupportsString);
-		str.data = bibliography;
-		transferable.addDataFlavor("text/unicode");
-		transferable.setTransferData("text/unicode", str, bibliography.length*2);
-		
-		clipboardService.setData(transferable, null, Components.interfaces.nsIClipboard.kGlobalClipboard);
-	}
 	
 	/*
 	 * Shows bibliography options and creates a bibliography
@@ -507,14 +488,18 @@ var Zotero_File_Interface = new function() {
 			format = "rtf";
 		}
 		
+		// determine locale preference
+		var locale = io.locale;
+		
 		// generate bibliography
 		try {
 			if(io.method == 'copy-to-clipboard') {
-				copyItemsToClipboard(items, io.style, false, io.mode === "citations");
+				Zotero_File_Interface.copyItemsToClipboard(items, io.style, locale, false, io.mode === "citations");
 			}
 			else {
 				var style = Zotero.Styles.get(io.style);
-				var bibliography = Zotero.Cite.makeFormattedBibliographyOrCitationList(style,
+				var cslEngine = style.getCiteProc(locale);
+				var bibliography = Zotero.Cite.makeFormattedBibliographyOrCitationList(cslEngine,
 					items, format, io.mode === "citations");
 			}
 		} catch(e) {
@@ -623,40 +608,6 @@ var Zotero_File_Interface = new function() {
 			return false;
 		}
 	}
-	
-	/**
-	 * Updates progress indicators based on current progress of translation
-	 */
-	this.updateProgress = function(translate) {
-		Zotero.updateZoteroPaneProgressMeter(translate.getProgress());
-		
-		var now = Date.now();
-		
-		// Don't repaint more than 10 times per second unless forced.
-		if(window.zoteroLastRepaint && (now - window.zoteroLastRepaint) < 100) return
-		
-		// Start a nested event queue
-		// TODO Remove when Fx > 14
-		var eventQueuePushed = "pushEventQueue" in Zotero.mainThread;
-		if(eventQueuePushed) {
-			Zotero.mainThread.pushEventQueue(null);
-		}
-		
-		try {
-			// Add the redraw event onto event queue
-			window.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
-				.getInterface(Components.interfaces.nsIDOMWindowUtils)
-				.redraw();
-			
-			// Process redraw event
-			Zotero.wait(0);
-		} finally {
-			// Close nested event queue
-			if(eventQueuePushed) Zotero.mainThread.popEventQueue();
-		}
-		
-		window.zoteroLastRepaint = now;
-	}
 }
 
 // Handles the display of a progress indicator
@@ -665,10 +616,10 @@ Zotero_File_Interface.Progress = new function() {
 	this.close = close;
 	
 	function show(headline) {
-		Zotero.showZoteroPaneProgressMeter(headline)
+		Zotero.showZoteroPaneProgressMeter(headline);
 	}
 	
 	function close() {
-		Zotero.hideZoteroPaneOverlay();
+		Zotero.hideZoteroPaneOverlays();
 	}
 }

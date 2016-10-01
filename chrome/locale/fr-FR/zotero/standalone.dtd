@@ -54,7 +54,7 @@
 <!ENTITY selectAllCmd.label "Tout sélectionner">
 <!ENTITY selectAllCmd.key "A">
 <!ENTITY selectAllCmd.accesskey "T">
-<!ENTITY preferencesCmd.label "Options…">
+<!ENTITY preferencesCmd.label "Préférences">
 <!ENTITY preferencesCmd.accesskey "i">
 <!ENTITY preferencesCmdUnix.label "Préférences">
 <!ENTITY preferencesCmdUnix.accesskey "f">
@@ -87,7 +87,7 @@
 <!ENTITY helpMenuWin.label "?">
 <!ENTITY helpMenuWin.accesskey "?">
 <!ENTITY helpMac.commandkey "?">
-<!ENTITY aboutProduct.label "À propos &brandShortName;">
+<!ENTITY aboutProduct.label "À propos de &brandShortName;">
 <!ENTITY aboutProduct.accesskey "p">
 <!ENTITY productHelp.label "Assistance et documentation">
 <!ENTITY productHelp.accesskey "A">

@@ -10,8 +10,6 @@
 <!DOCTYPE window [
 <!ENTITY % globalDTD SYSTEM "chrome://global/locale/global.dtd">
 %globalDTD;
-<!ENTITY % charsetDTD SYSTEM "chrome://global/locale/charsetOverlay.dtd" >
-%charsetDTD;
 <!ENTITY % textcontextDTD SYSTEM "chrome://global/locale/textcontext.dtd" >
 %textcontextDTD;
 <!ENTITY % standaloneDTD SYSTEM "chrome://zotero/locale/standalone.dtd" >
@@ -29,7 +27,7 @@
 	<script type="application/javascript"
 		src="chrome://global/content/contentAreaUtils.js"/>
 	<xhtml:link rel="shortcut icon"
-		href="chrome://zotero/skin/zotero-z-16px.png" style="display:none"/>
+		href="chrome://zotero/skin/zotero-new-z-16px.png" style="display:none"/>
 	<popup id="contentAreaContextMenu">
 		<menuitem id="context-undo"
 				label="&undoCmd.label;"

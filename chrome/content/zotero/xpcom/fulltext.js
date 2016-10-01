@@ -23,43 +23,14 @@
     ***** END LICENSE BLOCK *****
 */
 
-Zotero.Fulltext = new function(){
-	const FULLTEXT_VERSION = 1;
+Zotero.Fulltext = Zotero.FullText = new function(){
 	const CACHE_FILE = '.zotero-ft-cache';
 	
-	this.init = init;
-	this.registerPDFTool = registerPDFTool;
 	this.pdfConverterIsRegistered = pdfConverterIsRegistered;
 	this.pdfInfoIsRegistered = pdfInfoIsRegistered;
 	this.isCachedMIMEType = isCachedMIMEType;
-	this.indexWords = indexWords;
-	this.indexDocument = indexDocument;
-	this.indexString = indexString;
-	this.indexFile = indexFile;
-	this.indexPDF = indexPDF;
-	this.indexItems = indexItems;
-	this.findTextInFile = findTextInFile;
-	this.findTextInItems = findTextInItems;
-	this.clearItemWords = clearItemWords;
-	this.getPages = getPages;
-	this.getTotalPagesFromFile = getTotalPagesFromFile;
-	this.getChars = getChars;
-	this.getTotalCharsFromFile = getTotalCharsFromFile;
-	this.setChars = setChars;
-	this.setPages = setPages;
-	this.getIndexedState = getIndexedState;
-	this.getIndexStats = getIndexStats;
-	this.canReindex = canReindex;
-	this.rebuildIndex = rebuildIndex;
-	this.clearIndex = clearIndex;
-	this.clearCacheFile = clearCacheFile;
-	this.clearCacheFiles = clearCacheFiles;
-	//this.clearItemContent = clearItemContent;
-	this.purgeUnusedWords = purgeUnusedWords;
-	this.HTMLToText = HTMLToText;
-	this.semanticSplitter = semanticSplitter;
 	
-	this.__defineGetter__("pdfToolsDownloadBaseURL", function() { return 'http://www.zotero.org/download/xpdf/'; });
+	this.pdfToolsDownloadBaseURL = ZOTERO_CONFIG.PDF_TOOLS_URL;
 	this.__defineGetter__("pdfToolsName", function() { return 'Xpdf'; });
 	this.__defineGetter__("pdfToolsURL", function() { return 'http://www.foolabs.com/xpdf/'; });
 	this.__defineGetter__("pdfConverterName", function() { return 'pdftotext'; });
@@ -72,18 +43,47 @@ Zotero.Fulltext = new function(){
 	this.__defineGetter__("INDEX_STATE_PARTIAL", function () { return 2; });
 	this.__defineGetter__("INDEX_STATE_INDEXED", function () { return 3; });
 	
+	const _processorCacheFile = '.zotero-ft-unprocessed';
+	
+	const kWbClassSpace =            0;
+	const kWbClassAlphaLetter =      1;
+	const kWbClassPunct =            2;
+	const kWbClassHanLetter =        3;
+	const kWbClassKatakanaLetter =   4;
+	const kWbClassHiraganaLetter =   5;
+	const kWbClassHWKatakanaLetter = 6;
+	const kWbClassThaiLetter =       7;
+
 	
 	var _pdfConverterVersion = null;
 	var _pdfConverterFileName = null;
+	var _pdfConverterScript = null; // nsIFile of hidden window script on Windows
 	var _pdfConverter = null; // nsIFile to executable
 	var _pdfInfoVersion = null;
 	var _pdfInfoFileName = null;
+	var _pdfInfoScript = null; // nsIFile of redirection script
 	var _pdfInfo = null; // nsIFile to executable
 	
-	var self = this;
+	var _idleObserverIsRegistered = false;
+	var _idleObserverDelay = 5;
+	var _processorTimer = null;
+	var _processorBlacklist = {};
+	var _upgradeCheck = true;
+	var _syncLibraryVersion = 0;
 	
-	function init() {
-		var platform = Zotero.platform.replace(' ', '-');
+	const SYNC_STATE_UNSYNCED = 0;
+	const SYNC_STATE_IN_SYNC = 1;
+	const SYNC_STATE_TO_PROCESS = 2;
+	const SYNC_STATE_TO_DOWNLOAD = 3;
+	
+	this.init = Zotero.Promise.coroutine(function* () {
+		yield Zotero.DB.queryAsync("ATTACH ':memory:' AS 'indexing'");
+		yield Zotero.DB.queryAsync('CREATE TABLE indexing.fulltextWords (word NOT NULL)');
+		
+		this.decoder = Components.classes["@mozilla.org/intl/utf8converterservice;1"].
+			getService(Components.interfaces.nsIUTF8ConverterService);
+
+		var platform = Zotero.platform.replace(/ /g, '-');
 		_pdfConverterFileName = this.pdfConverterName + '-' + platform;
 		_pdfInfoFileName = this.pdfInfoName + '-' + platform;
 		if (Zotero.isWin) {
@@ -96,9 +96,192 @@ Zotero.Fulltext = new function(){
 		this.__defineGetter__("pdfInfoFileName", function() { return _pdfInfoFileName; });
 		this.__defineGetter__("pdfInfoVersion", function() { return _pdfInfoVersion; });
 		
-		this.registerPDFTool('converter');
-		this.registerPDFTool('info');
+		yield this.registerPDFTool('converter');
+		yield this.registerPDFTool('info');
+		
+		this.startContentProcessor();
+		Zotero.addShutdownListener(this.stopContentProcessor.bind(this));
+	});
+	
+	
+	this.getLibraryVersion = function (libraryID) {
+		if (!libraryID) throw new Error("libraryID not provided");
+		return Zotero.DB.valueQueryAsync(
+			"SELECT version FROM version WHERE schema=?", "fulltext_" + libraryID
+		)
+	};
+	
+	
+	this.setLibraryVersion = Zotero.Promise.coroutine(function* (libraryID, version) {
+		if (!libraryID) throw new Error("libraryID not provided");
+		yield Zotero.DB.queryAsync(
+			"REPLACE INTO version VALUES (?, ?)", ["fulltext_" + libraryID, version]
+		);
+	});
+	
+	
+	this.clearLibraryVersion = function (libraryID) {
+		return Zotero.DB.queryAsync("DELETE FROM version WHERE schema=?", "fulltext_" + libraryID);
+	};
+	
+	
+	this.getItemVersion = Zotero.Promise.coroutine(function* (itemID) {
+		return Zotero.DB.valueQueryAsync(
+			"SELECT version FROM fulltextItems WHERE itemID=?", itemID
+		)
+	});
+	
+	
+	this.setItemSynced = function (itemID, version) {
+		return Zotero.DB.queryAsync(
+			"UPDATE fulltextItems SET synced=?, version=? WHERE itemID=?",
+			[SYNC_STATE_IN_SYNC, version, itemID]
+		);
+	};
+	
+	
+	// this is a port from http://mxr.mozilla.org/mozilla-central/source/intl/lwbrk/src/nsSampleWordBreaker.cpp to
+	// Javascript to avoid the overhead of xpcom calls. The port keeps to the mozilla naming of interfaces/constants as
+	// closely as possible.
+	function getClass(c, cc) {
+		if (cc < 0x2E80) { //alphabetical script
+			if ((cc & 0xFF80) == 0) { // ascii
+				if (c == ' '  || c == "\t" || c == "\r" || c == "\n") { return kWbClassSpace; }
+				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) { return kWbClassAlphaLetter; }
+				return kWbClassPunct;
+			}
+			if ((0xFF80 & cc) == 0x0E00) { return kWbClassThaiLetter; }
+			if (cc == 0x00A0/*NBSP*/) { return kWbClassSpace; }
+			
+			// General and Supplemental Unicode punctuation
+			if ((cc >= 0x2000 && cc <= 0x206f) || (cc >= 0x2e00 && cc <= 0x2e7f)) { return kWbClassPunct; }
+			
+			return kWbClassAlphaLetter;
+		}
+
+		if ((cc >= 0x3400 && cc <= 0x9fff) || (cc>= 0xf900 && cc <= 0xfaff)) /*han*/ { return kWbClassHanLetter; }
+		if (cc >= 0x30A0 && cc <= 0x30FF) { return kWbClassKatakanaLetter; }
+		if (cc >= 0x3040 && cc <= 0x309F) { return kWbClassHiraganaLetter; }
+		if (cc>= 0xFF60 && cc <= 0xFF9F) { return kWbClassHWKatakanaLetter; }
+		return kWbClassAlphaLetter;
 	}
+	
+	
+	this.getLatestPDFToolsVersion = Zotero.Promise.coroutine(function* () {
+		if (Zotero.isWin) {
+			return "3.02a";
+		}
+		
+		// Find latest version for this platform
+		var url = Zotero.Fulltext.pdfToolsDownloadBaseURL + 'latest.json';
+		var xmlhttp = yield Zotero.HTTP.request("GET", url, { responseType: "json" });
+		var json = xmlhttp.response;
+		
+		var platform = Zotero.platform.replace(/\s/g, '-');
+		var version = json[platform] || json['default'];
+		
+		Zotero.debug("Latest PDF tools version for " + platform + " is " + version);
+		
+		return version;
+	});
+	
+	
+	/*
+	 * Download and install latest PDF tool
+	 */
+	this.downloadPDFTool = Zotero.Promise.coroutine(function* (tool, version) {
+		var ioService = Components.classes["@mozilla.org/network/io-service;1"]
+			.getService(Components.interfaces.nsIIOService);
+		
+		if (tool == 'converter') {
+			var fileName = this.pdfConverterFileName;
+		}
+		else {
+			var fileName = this.pdfInfoFileName;
+		}
+		
+		var spec = this.pdfToolsDownloadBaseURL + version + "/" + fileName;
+		var uri = ioService.newURI(spec, null, null);
+		var tmpFile = OS.Path.join(Zotero.getTempDirectory().path, fileName);
+		
+		yield Zotero.File.download(uri, tmpFile);
+		
+		var fileInfo = yield OS.File.stat(tmpFile);
+		
+		// Delete if too small, since a 404 might not be detected above
+		if (fileInfo.size < 50000) {
+			let msg = tmpFile + " is too small -- deleting";
+			Zotero.logError(msg);
+			try {
+				yield OS.File.remove(tmpFile);
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+			throw new Error(msg);
+		}
+		
+		var scriptExt = _getScriptExtension();
+		// On Windows, write out script to hide pdftotext console window
+		// TEMP: disabled
+		if (false && tool == 'converter') {
+			if (Zotero.isWin) {
+				let content = yield Zotero.File.getContentsFromURLAsync(
+					'resource://zotero/hide.' + scriptExt
+				);
+				var tmpScriptFile = OS.Path.join(
+					Zotero.getTempDirectory().path,
+					'pdftotext.' + scriptExt
+				);
+				yield Zotero.File.putContentsAsync(tmpScriptFile, content);
+			}
+		}
+		// Write out output redirection script for pdfinfo
+		// TEMP: disabled on Windows
+		else if (!Zotero.isWin && tool == 'info') {
+			let content = yield Zotero.File.getContentsFromURLAsync(
+				'resource://zotero/redirect.' + scriptExt
+			);
+			var tmpScriptFile = OS.Path.join(
+				Zotero.getTempDirectory().path,
+				'pdfinfo.' + scriptExt
+			);
+			yield Zotero.File.putContentsAsync(tmpScriptFile, content);
+		}
+		
+		// Set permissions to 755
+		if (Zotero.isMac || Zotero.isLinux) {
+			yield OS.File.setPermissions(tmpFile, {
+				unixMode: 0o755
+			});
+			if (tmpScriptFile) {
+				yield OS.File.setPermissions(tmpScriptFile, {
+					unixMode: 0o755
+				});
+			}
+		}
+		
+		var destDir = Zotero.getZoteroDirectory()
+		// Move redirect script and executable into data dir
+		if (tmpScriptFile) {
+			yield OS.File.move(
+				tmpScriptFile,
+				OS.Path.join(destDir.path, OS.Path.basename(tmpScriptFile))
+			);
+		}
+		yield OS.File.move(tmpFile, OS.Path.join(destDir.path, fileName));
+		
+		// Write the version number to a file
+		var versionFile = destDir.clone();
+		versionFile.append(fileName + '.version');
+		// TEMP
+		if (Zotero.isWin) {
+			version = '3.02a';
+		}
+		yield Zotero.File.putContentsAsync(versionFile, version + '');
+		
+		yield Zotero.Fulltext.registerPDFTool(tool);
+	});
 	
 	
 	/*
@@ -107,19 +290,19 @@ Zotero.Fulltext = new function(){
 	 * {platform} is navigator.platform, with spaces replaced by hyphens
 	 *   e.g. "Win32", "Linux-i686", "MacPPC", "MacIntel", etc.
 	 */
-	function registerPDFTool(tool) {
+	this.registerPDFTool = Zotero.Promise.coroutine(function* (tool) {
 		var errMsg = false;
 		var exec = Zotero.getZoteroDirectory();
 		
 		switch (tool) {
 			case 'converter':
 				var toolName = this.pdfConverterName;
-				var fileName = _pdfConverterFileName
+				var fileName = _pdfConverterFileName;
 				break;
 				
 			case 'info':
 				var toolName = this.pdfInfoName;
-				var fileName = _pdfInfoFileName
+				var fileName = _pdfInfoFileName;
 				break;
 			
 			default:
@@ -142,10 +325,49 @@ Zotero.Fulltext = new function(){
 		var versionFile = exec.parent;
 		versionFile.append(fileName + '.version');
 		if (versionFile.exists()) {
-			var version = Zotero.File.getSample(versionFile).split(/[\r\n\s]/)[0];
+			try {
+				var version = (yield Zotero.File.getSample(versionFile)).split(/[\r\n\s]/)[0];
+			}
+			catch (e) {
+				Zotero.debug(e, 1);
+				Components.utils.reportError(e);
+			}
 		}
 		if (!version) {
 			var version = 'UNKNOWN';
+		}
+		
+		// If scripts exist, use those instead
+		switch (tool) {
+		case 'converter':
+			// TEMP: disabled
+			if (false && Zotero.isWin) {
+				var script = Zotero.getZoteroDirectory();
+				script.append('pdftotext.' + _getScriptExtension())
+				if (script.exists()) {
+					Zotero.debug(script.leafName + " registered");
+					_pdfConverterScript = script;
+				}
+			}
+			break;
+		
+		case 'info':
+			// Modified 3.02 version doesn't use redirection script
+			if (version.startsWith('3.02')) break;
+			
+			var script = Zotero.getZoteroDirectory();
+			// TEMP: disabled on Win
+			if (!Zotero.isWin) {
+				script.append('pdfinfo.' + _getScriptExtension())
+				// The redirection script is necessary to run pdfinfo
+				if (!script.exists()) {
+					Zotero.debug(script.leafName + " not found -- PDF statistics disabled");
+					return false;
+				}
+				Zotero.debug(toolName + " redirection script registered");
+				_pdfInfoScript = script;
+			}
+			break;
 		}
 		
 		switch (tool) {
@@ -160,10 +382,36 @@ Zotero.Fulltext = new function(){
 				break;
 		}
 		
-		Zotero.debug(toolName + ' version ' + version + ' registered at ' + exec.path);
+		Zotero.debug(toolName + ' version ' + version + ' registered');
 		
 		return true;
-	}
+	});
+	
+	
+	/**
+	 * Unregister and delete PDF tools
+	 *
+	 * Used only for tests
+	 */
+	this.uninstallPDFTools = Zotero.Promise.coroutine(function* () {
+		Zotero.debug("Uninstalling PDF tools");
+		
+		var dataDir = Zotero.getZoteroDirectory().path;
+		if (_pdfConverter) {
+			yield Zotero.File.removeIfExists(_pdfConverter.path);
+			yield Zotero.File.removeIfExists(_pdfConverter.path + ".version");
+		}
+		if (_pdfInfo) {
+			yield Zotero.File.removeIfExists(_pdfInfo.path);
+			yield Zotero.File.removeIfExists(_pdfInfo.path + ".version");
+		}
+		if (_pdfConverterScript) yield Zotero.File.removeIfExists(_pdfConverterScript.path);
+		if (_pdfInfoScript) yield Zotero.File.removeIfExists(_pdfInfoScript.path);
+		
+		_pdfConverter = null;
+		_pdfInfo = null;
+		_pdfInfoScript = null;
+	});
 	
 	
 	function pdfConverterIsRegistered() {
@@ -173,6 +421,25 @@ Zotero.Fulltext = new function(){
 	
 	function pdfInfoIsRegistered() {
 		return !!_pdfInfo;
+	}
+	
+	
+	this.getPDFConverterExecAndArgs = function () {
+		if (!this.pdfConverterIsRegistered()) {
+			throw new Error("PDF converter is not registered");
+		}
+		
+		if (_pdfConverterScript) {
+			return {
+				exec: _pdfConverterScript,
+				args: [_pdfConverter.path]
+			}
+		}
+		
+		return {
+			exec: _pdfConverter,
+			args: []
+		}
 	}
 	
 	
@@ -189,222 +456,197 @@ Zotero.Fulltext = new function(){
 	}
 	
 	
-	/*
+	/**
 	 * Index multiple words at once
+	 *
+	 * @requireTransaction
+	 * @param {Number} itemID
+	 * @param {Array<string>} words
+	 * @return {Promise}
 	 */
-	function indexWords(itemID, words){
-		if (!words || !words.length || !itemID){
-			return false;
+	var indexWords = Zotero.Promise.coroutine(function* (itemID, words) {
+		Zotero.DB.requireTransaction();
+		let chunk;
+		yield Zotero.DB.queryAsync("DELETE FROM indexing.fulltextWords");
+		while (words.length > 0) {
+			chunk = words.splice(0, 100);
+			yield Zotero.DB.queryAsync('INSERT INTO indexing.fulltextWords (word) ' + chunk.map(x => 'SELECT ?').join(' UNION '), chunk);
 		}
-		
-		var existing = [];
-		var done = 0;
-		var maxWords = 999; // compiled limit
-		var numWords = words.length;
-		
-		Zotero.DB.beginTransaction();
-		
-		var origWords = [];
-		
-		do {
-			var chunk = words.splice(0, maxWords);
-			origWords = origWords.concat(chunk);
-			
-			var sqlQues = [];
-			var sqlParams = [];
-			
-			for each(var word in chunk) {
-				sqlQues.push('?');
-				sqlParams.push( { string: word } );
-			}
-			
-			var sql = "SELECT word, wordID from fulltextWords WHERE word IN ("
-			sql += sqlQues.join() + ")";
-			var wordIDs = Zotero.DB.query(sql, sqlParams);
-			
-			for (var i in wordIDs) {
-				// Underscore avoids problems with JS reserved words
-				existing['_' + wordIDs[i].word] = wordIDs[i].wordID;
-			}
-			
-			done += chunk.length;
-		}
-		while (done < numWords);
-		
-		Zotero.DB.query("REPLACE INTO fulltextItems (itemID, version) VALUES (?,?)",
-			[itemID, FULLTEXT_VERSION]);
-		
-		
-		// Handle bound parameters manually for optimal speed
-		var statement1 = Zotero.DB.getStatement("INSERT INTO fulltextWords (word) VALUES (?)");
-		var statement2 = Zotero.DB.getStatement("INSERT OR IGNORE INTO fulltextItemWords VALUES (?,?)");
-		
-		for each(var word in origWords) {
-			// Skip words containing invalid characters
-			if (word.match(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ud800-\udfff\ufffe\uffff]/)) {
-				Zotero.debug("Skipping word '" + word + "' due to invalid characters");
-				continue;
-			}
-			if (existing['_' + word]){
-				var wordID = existing['_' + word];
-			}
-			else {
-				statement1.bindUTF8StringParameter(0, word);
-				statement1.execute()
-				var wordID = Zotero.DB.getLastInsertID();
-			}
-			
-			statement2.bindInt32Parameter(0, wordID);
-			statement2.bindInt32Parameter(1, itemID);
-			statement2.execute();
-		}
-		
-		statement1.reset();
-		statement2.reset();
-		
-		Zotero.DB.commitTransaction();
-	}
+		yield Zotero.DB.queryAsync('INSERT OR IGNORE INTO fulltextWords (word) SELECT word FROM indexing.fulltextWords');
+		yield Zotero.DB.queryAsync('DELETE FROM fulltextItemWords WHERE itemID = ?', [itemID]);
+		yield Zotero.DB.queryAsync('INSERT OR IGNORE INTO fulltextItemWords (wordID, itemID) SELECT wordID, ? FROM fulltextWords JOIN indexing.fulltextWords USING(word)', [itemID]);
+		yield Zotero.DB.queryAsync("REPLACE INTO fulltextItems (itemID, version) VALUES (?,?)", [itemID, 0]);
+		yield Zotero.DB.queryAsync("DELETE FROM indexing.fulltextWords");
+	});
 	
 	
-	function indexString(text, charset, itemID){
-		try {
-			Zotero.UnresponsiveScriptIndicator.disable();
-			
-			var words = semanticSplitter(text, charset);
-			
-			Zotero.DB.beginTransaction();
-			
+	/**
+	 * @return {Promise}
+	 */
+	var indexString = Zotero.Promise.coroutine(function* (text, charset, itemID, stats, version, synced) {
+		var words = this.semanticSplitter(text, charset);
+		
+		yield Zotero.DB.executeTransaction(function* () {
 			this.clearItemWords(itemID, true);
-			this.indexWords(itemID, words);
+			yield indexWords(itemID, words, stats, version, synced);
+			
+			var sql = "UPDATE fulltextItems SET synced=?";
+			var params = [synced ? parseInt(synced) : SYNC_STATE_UNSYNCED];
+			if (stats) {
+				for (let stat in stats) {
+					sql += ", " + stat + "=?";
+					params.push(stats[stat] ? parseInt(stats[stat]) : null);
+				}
+			}
+			if (version) {
+				sql += ", version=?";
+				params.push(parseInt(version));
+			}
+			sql += " WHERE itemID=?";
+			params.push(itemID);
+			yield Zotero.DB.queryAsync(sql, params);
 			
 			/*
 			var sql = "REPLACE INTO fulltextContent (itemID, textContent) VALUES (?,?)";
 			Zotero.DB.query(sql, [itemID, {string:text}]);
 			*/
 			
-			Zotero.DB.commitTransaction();
+			Zotero.Notifier.queue('refresh', 'item', itemID);
+		}.bind(this));
+		
+		// If there's a processor cache file, delete it (whether or not we just used it)
+		var item = yield Zotero.Items.getAsync(itemID);
+		var cacheFile = this.getItemProcessorCacheFile(item);
+		if (cacheFile.exists()) {
+			cacheFile.remove(false);
 		}
-		finally {
-			Zotero.UnresponsiveScriptIndicator.enable();
-		}
-	}
+	}.bind(this));
 	
 	
-	function indexDocument(document, itemID){
+	/**
+	 * @param {Document} document
+	 * @param {Number} itemID
+	 * @return {Promise}
+	 */
+	this.indexDocument = Zotero.Promise.coroutine(function* (document, itemID) {
 		if (!itemID){
 			throw ('Item ID not provided to indexDocument()');
 		}
 		
 		Zotero.debug("Indexing document '" + document.title + "'");
 		
+		if (!Zotero.MIME.isTextType(document.contentType)) {
+			Zotero.debug(document.contentType + " document is not text", 2);
+			return false;
+		}
+		
 		if (!document.body) {
-			Zotero.debug("Cannot index " + document.contentType + " file in indexDocument()", 2);
+			Zotero.debug("Cannot index " + document.contentType + " file", 2);
 			return false;
 		}
 		
 		if (!document.characterSet){
-			Zotero.debug("Text file didn't have charset in indexFile()", 1);
+			Zotero.debug("Text file didn't have charset", 2);
 			return false;
 		}
 		
-		var text = document.body.innerHTML;
-		
 		var maxLength = Zotero.Prefs.get('fulltext.textMaxLength');
-		if (text.length > maxLength) {
+		if (!maxLength) {
+			return false;
+		}
+		var obj = yield convertItemHTMLToText(itemID, document.body.innerHTML, maxLength);
+		var text = obj.text;
+		var totalChars = obj.totalChars;
+		
+		if (totalChars > maxLength) {
 			Zotero.debug('Only indexing first ' + maxLength + ' characters of item '
 				+ itemID + ' in indexDocument()');
-			text = text.substr(0, maxLength);
 		}
 		
-		text = text.replace(/(>)/g, '$1 ');
-		text = this.HTMLToText(text);
-		this.indexString(text, document.characterSet, itemID);
-		
-		var charsIndexed = Math.min(maxLength, text.length);
-		this.setChars(itemID, { indexed: charsIndexed, total: text.length });
-	}
+		yield indexString(text, document.characterSet, itemID);
+		yield setChars(itemID, { indexed: text.length, total: totalChars });
+	});
 	
 	
-	function indexFile(file, mimeType, charset, itemID, maxLength, isCacheFile) {
-		if (!file.exists()){
+	/**
+	 * @param {String} path
+	 * @param {Boolean} [complete=FALSE]  Index the file in its entirety, ignoring maxLength
+	 */
+	var indexFile = Zotero.Promise.coroutine(function* (path, contentType, charset, itemID, complete, isCacheFile) {
+		if (!(yield OS.File.exists(path))) {
 			Zotero.debug('File not found in indexFile()', 2);
 			return false;
 		}
 		
-		if (!itemID){ throw ('Item ID not provided to indexFile()'); }
-		
-		if (!mimeType) {
-			Zotero.debug("MIME type not provided in indexFile()", 1);
+		if (!contentType) {
+			Zotero.debug("Content type not provided in indexFile()", 1);
 			return false;
 		}
 		
-		if (maxLength == undefined || maxLength === true) {
-			maxLength = Zotero.Prefs.get('fulltext.textMaxLength');
-		}
-		// If maxLength is explicitly false, index everything
-		else if (maxLength === false || maxLength === null) {
-			maxLength = false;
+		if (!itemID) {
+			throw new Error('Item ID not provided');
 		}
 		
-		if (mimeType == 'application/pdf') {
-			try {
-				Zotero.UnresponsiveScriptIndicator.disable();
-				return this.indexPDF(file, itemID, !maxLength);
-			}
-			finally {
-				Zotero.UnresponsiveScriptIndicator.enable();
-			}
+		if (contentType == 'application/pdf') {
+			return this.indexPDF(path, itemID, complete);
 		}
 		
-		if (mimeType.substr(0, 5)!='text/'){
+		if (!Zotero.MIME.isTextType(contentType)) {
 			Zotero.debug('File is not text in indexFile()', 2);
 			return false;
 		}
 		
-		if (!charset){
-			Zotero.debug("Text file didn't have charset in indexFile()", 1);
+		if (!charset) {
+			Zotero.logError(`Item ${itemID} didn't have a charset`);
 			return false;
 		}
 		
-		Zotero.debug('Indexing file ' + file.path);
+		var maxLength = Zotero.Prefs.get('fulltext.textMaxLength');
+		if (!maxLength) {
+			return false;
+		}
+		if (complete) {
+			maxLength = null;
+		}
 		
-		var text = Zotero.File.getContents(file, charset, maxLength);
-		// Split elements to avoid word concatentation
-		text = text.replace(/(>)/g, '$1 ');
-		text = this.HTMLToText(text);
-		this.indexString(text, charset, itemID);
+		Zotero.debug('Indexing file ' + path);
+		var text = yield Zotero.File.getContentsAsync(path, charset);
+		var totalChars = text.length;
+		if (contentType == 'text/html') {
+			let obj = yield convertItemHTMLToText(itemID, text, maxLength);
+			text = obj.text;
+			totalChars = obj.totalChars;
+		}
+		else {
+			if (maxLength && text.length > maxLength) {
+				text = text.substr(0, maxLength);
+			}
+		}
 		
-		// Record number of characters indexed
+		yield indexString(text, charset, itemID);
+		
+		// Record the number of characters indexed (unless we're indexing a (PDF) cache file,
+		// in which case the stats are coming from elsewhere)
 		if (!isCacheFile) {
-			try {
-				var totalChars = this.getTotalCharsFromFile(itemID);
-			}
-			catch (e) {
-				Zotero.debug(e);
-				Components.utils.reportError(e);
-				totalChars = 0;
-			}
-			if (maxLength) {
-				var charsIndexed = Math.min(maxLength, totalChars);
-			}
-			else {
-				var charsIndexed = totalChars;
-			}
-			this.setChars(itemID, { indexed: charsIndexed, total: totalChars });
+			yield setChars(itemID, { indexed: text.length, total: totalChars });
 		}
 		
 		return true;
-	}
+	}.bind(this));
 	
 	
-	/*
+	/**
 	 * Run PDF through pdfinfo and pdftotext to generate .zotero-ft-info
 	 * and .zotero-ft-cache, and pass the text file back to indexFile()
 	 *
-	 * @param	 allPages	 If true, index all pages rather than pdfMaxPages
+	 * @param {nsIFile} file
+	 * @param {Number} itemID
+	 * @param {Boolean} [allPages] - If true, index all pages rather than pdfMaxPages
+	 * @return {Promise}
 	 */
-	function indexPDF(file, itemID, allPages) {
+	this.indexPDF = Zotero.Promise.coroutine(function* (filePath, itemID, allPages) {
 		if (!_pdfConverter) {
+			Zotero.debug("PDF tools are not installed -- skipping indexing");
 			return false;
 		}
 		
@@ -413,49 +655,52 @@ Zotero.Fulltext = new function(){
 			return false;
 		}
 		
-		var item = Zotero.Items.get(itemID);
+		var item = yield Zotero.Items.getAsync(itemID);
 		var linkMode = item.attachmentLinkMode;
 		// If file is stored outside of Zotero, create a directory for the item
 		// in the storage directory and save the cache file there
 		if (linkMode == Zotero.Attachments.LINK_MODE_LINKED_FILE) {
-			var cacheFile = Zotero.Attachments.createDirectoryForItem(itemID);
+			var parentDirPath = (yield Zotero.Attachments.createDirectoryForItem(item)).path;
 		}
 		else {
-			var cacheFile = file.parent;
+			var parentDirPath = OS.Path.dirname(filePath);
 		}
-		cacheFile.append(this.pdfConverterCacheFile);
+		var infoFilePath = OS.Path.join(parentDirPath, this.pdfInfoCacheFile);
+		var cacheFilePath = OS.Path.join(parentDirPath, this.pdfConverterCacheFile);
 		
-		if (_pdfInfo) {
-			var infoFile = cacheFile.parent;
-			infoFile.append(this.pdfInfoCacheFile);
-			Zotero.debug('Running pdfinfo "' + file.path + '" "' + infoFile.path + '"');
+		// Modified 3.02 version that can output a text file directly
+		if (_pdfInfo && _pdfInfoVersion.startsWith('3.02')) {
+			let args = [filePath, infoFilePath];
 			
-			var proc = Components.classes["@mozilla.org/process/util;1"].
-					createInstance(Components.interfaces.nsIProcess);
-			proc.init(_pdfInfo);
-			
-			var args = [file.path, infoFile.path];
 			try {
-				proc.runw(true, args, args.length);
-				var totalPages = this.getTotalPagesFromFile(itemID);
+				yield Zotero.Utilities.Internal.exec(_pdfInfo, args);
+				var totalPages = yield getTotalPagesFromFile(itemID);
 			}
 			catch (e) {
 				Zotero.debug("Error running pdfinfo");
+			}
+		}
+		// Use redirection script
+		else if (_pdfInfoScript) {
+			let args = [_pdfInfo.path, filePath, infoFilePath];
+			
+			try {
+				yield Zotero.Utilities.Internal.exec(_pdfInfoScript, args);
+				var totalPages = yield getTotalPagesFromFile(itemID);
+			}
+			catch (e) {
+				Components.utils.reportError(e);
+				Zotero.debug("Error running pdfinfo", 1);
+				Zotero.debug(e, 1);
 			}
 		}
 		else {
 			Zotero.debug(this.pdfInfoName + " is not available");
 		}
 		
-		Zotero.debug('Running pdftotext -enc UTF-8 -nopgbrk '
-			+ (allPages ? '' : '-l ' + maxPages) + ' "' + file.path + '" "'
-			+ cacheFile.path + '"');
+		var {exec, args} = this.getPDFConverterExecAndArgs();
+		args.push('-enc', 'UTF-8', '-nopgbrk');
 		
-		var proc = Components.classes["@mozilla.org/process/util;1"].
-				createInstance(Components.interfaces.nsIProcess);
-		proc.init(_pdfConverter);
-		
-		var args = ['-enc', 'UTF-8', '-nopgbrk'];
 		if (allPages) {
 			if (totalPages) {
 				var pagesIndexed = totalPages;
@@ -465,74 +710,464 @@ Zotero.Fulltext = new function(){
 			args.push('-l', maxPages);
 			var pagesIndexed = Math.min(maxPages, totalPages);
 		}
-		args.push(file.path, cacheFile.path);
+		args.push(filePath, cacheFilePath);
+		
 		try {
-			proc.runw(true, args, args.length);
+			yield Zotero.Utilities.Internal.exec(exec, args);
 		}
 		catch (e) {
-			Zotero.debug("Error running pdftotext");
+			Components.utils.reportError(e);
+			Zotero.debug("Error running pdftotext", 1);
+			Zotero.debug(e, 1);
 			return false;
 		}
 		
-		if (!cacheFile.exists()) {
-			var msg = file.leafName + " was not indexed";
-			if (!file.leafName.match(/^[\u0000-\u007F]+$/)) {
-				msg += " -- PDFs with filenames containing extended characters cannot currently be indexed due to a Firefox limitation";
+		if (!(yield OS.File.exists(cacheFilePath))) {
+			let fileName = OS.Path.basename(filePath);
+			let msg = fileName + " was not indexed";
+			if (!fileName.match(/^[\u0000-\u007F]+$/)) {
+				msg += " -- PDFs with filenames containing extended characters cannot currently be indexed due to a Mozilla limitation";
 			}
 			Zotero.debug(msg, 2);
 			Components.utils.reportError(msg);
 			return false;
 		}
 		
-		Zotero.DB.beginTransaction();
-		this.indexFile(cacheFile, 'text/plain', 'utf-8', itemID, false, true);
-		this.setPages(itemID, { indexed: pagesIndexed, total: totalPages });
-		Zotero.DB.commitTransaction();
+		yield indexFile(cacheFilePath, 'text/plain', 'utf-8', itemID, true, true);
+		yield setPages(itemID, { indexed: pagesIndexed, total: totalPages });
+		
 		return true;
-	}
+	});
 	
 	
-	function indexItems(items, complete, ignoreErrors) {
-		if (items.constructor.name != 'Array') {
+	/**
+	 * @param {Integer[]|Integer} items - One or more itemIDs
+	 */
+	this.indexItems = Zotero.Promise.coroutine(function* (items, complete, ignoreErrors) {
+		if (!Array.isArray(items)) {
 			items = [items];
 		}
-		var items = Zotero.Items.get(items);
+		var items = yield Zotero.Items.getAsync(items);
 		var found = [];
 		
-		Zotero.DB.beginTransaction();
-		
-		for each(var i in items){
-			if (!i.isAttachment()){
+		for (let i=0; i<items.length; i++) {
+			let item = items[i];
+			if (!item.isAttachment()) {
 				continue;
 			}
 			
-			var file = i.getFile();
-			if (!file){
-				Zotero.debug("No file to index for item " + i.id + " in Fulltext.indexItems()");
+			Zotero.debug("Indexing item " + item.libraryKey);
+			let itemID = item.id;
+			
+			var path = yield item.getFilePathAsync();
+			if (!path) {
+				Zotero.debug("No file to index for item " + item.libraryKey
+					+ " in Zotero.FullText.indexItems()");
 				continue;
 			}
 			
 			if (ignoreErrors) {
 				try {
-					this.indexFile(file, i.attachmentMIMEType, i.attachmentCharset, i.id, !complete);
+					yield indexFile(path, item.attachmentContentType, item.attachmentCharset, itemID, complete);
 				}
 				catch (e) {
-					Zotero.debug(e, 1);
-					Components.utils.reportError("Error indexing " + file.path);
-					Components.utils.reportError(e);
+					Components.utils.reportError("Error indexing " + path);
+					Zotero.logError(e);
 				}
 			}
 			else {
-				this.indexFile(file, i.attachmentMIMEType, i.attachmentCharset, i.id, !complete);
+				yield indexFile(path, item.attachmentContentType, item.attachmentCharset, itemID, complete);
 			}
 		}
+	});
+	
+	
+	//
+	// Full-text content syncing
+	//
+	/**
+	 * Get content and stats that haven't yet been synced
+	 *
+	 * @param {Integer} libraryID
+	 * @param {Integer} [options]
+	 * @param {Integer} [options.maxSize]
+	 * @param {Integer} [options.maxItems]
+	 * @param {Integer} [options.lastItemID] - Only return content for items above this id
+	 * @return {Promise<Array<Object>>}
+	 */
+	this.getUnsyncedContent = Zotero.Promise.coroutine(function* (libraryID, options = {}) {
+		var contentItems = [];
+		var sql = "SELECT itemID, indexedChars, totalChars, indexedPages, totalPages "
+			+ "FROM fulltextItems FI JOIN items I USING (itemID) WHERE libraryID=? AND "
+			+ "FI.synced=? AND I.synced=1 ";
+		var params = [libraryID, SYNC_STATE_UNSYNCED];
+		if (options.lastItemID) {
+			sql += "AND itemID>?";
+			params.push(options.lastItemID);
+		}
+		sql += "ORDER BY itemID DESC";
+		var rows = yield Zotero.DB.queryAsync(sql, params);
+		var contentSize = 0;
+		for (let i = 0; i < rows.length; i++) {
+			let row = rows[i];
+			let content;
+			let itemID = row.itemID;
+			let item = yield Zotero.Items.getAsync(itemID);
+			let libraryKey = item.libraryKey;
+			let contentType = item.attachmentContentType;
+			if (isCachedMIMEType(contentType) || Zotero.MIME.isTextType(contentType)) {
+				try {
+					let cacheFile = this.getItemCacheFile(item);
+					if (cacheFile.exists()) {
+						Zotero.debug("Getting full-text content from cache "
+							+ "file for item " + libraryKey);
+						content = yield Zotero.File.getContentsAsync(cacheFile);
+					}
+					else {
+						if (!Zotero.MIME.isTextType(contentType)) {
+							Zotero.debug("Full-text content cache file doesn't exist for item "
+								+ libraryKey, 2);
+							continue;
+						}
+						
+						let path = yield item.getFilePathAsync();
+						if (!path) {
+							Zotero.debug("File doesn't exist getting full-text content for item "
+								+ libraryKey, 2);
+							continue;
+						}
+						
+						Zotero.debug("Getting full-text content from file for item " + libraryKey);
+						content = yield Zotero.File.getContentsAsync(path, item.attachmentCharset);
+						
+						// If HTML, convert to plain text first, and cache the result
+						if (item.attachmentContentType == 'text/html') {
+							let obj = yield convertItemHTMLToText(
+								itemID,
+								content,
+								// Include in the cache file only as many characters as we
+								// indexed previously
+								row.indexedChars
+							);
+							content = obj.text;
+						}
+						else {
+							// Include only as many characters as we've indexed
+							content = content.substr(0, row.indexedChars);
+						}
+					}
+				}
+				catch (e) {
+					Zotero.logError(e);
+					continue;
+				}
+			}
+			else {
+				Zotero.debug("Skipping non-text file getting full-text content for item "
+					+ libraryKey, 2);
+				
+				// Delete rows for items that weren't supposed to be indexed
+				yield Zotero.DB.executeTransaction(function* () {
+					yield this.clearItemWords(itemID);
+				}.bind(this));
+				continue;
+			}
+			
+			// If this isn't the first item and it would put us over the size limit, stop
+			if (contentItems.length && options.maxSize && contentSize + content.length > options.maxSize) {
+				break;
+			}
+			
+			contentItems.push({
+				itemID: item.id,
+				key: item.key,
+				content,
+				indexedChars: row.indexedChars ? row.indexedChars : 0,
+				totalChars: row.totalChars ? row.totalChars : 0,
+				indexedPages: row.indexedPages ? row.indexedPages : 0,
+				totalPages: row.totalPages ? row.totalPages : 0
+			});
+			
+			if (options.maxItems && contentItems.length >= options.maxItems) {
+				break;
+			}
+			contentSize += content.length;
+		}
+		return contentItems;
+	});
+	
+	
+	/**
+	 * @return {String}  PHP-formatted POST data for items not yet downloaded
+	 */
+	this.getUndownloadedPostData = Zotero.Promise.coroutine(function* () {
+		// TODO: Redo for API syncing
 		
-		Zotero.DB.commitTransaction();
+		// On upgrade, get all content
+		var sql = "SELECT value FROM settings WHERE setting='fulltext' AND key='downloadAll'";
+		if (yield Zotero.DB.valueQueryAsync(sql)) {
+			return "&ftkeys=all";
+		}
+		
+		var sql = "SELECT itemID FROM fulltextItems WHERE synced="
+			+ SYNC_STATE_TO_DOWNLOAD;
+		var itemIDs = yield Zotero.DB.columnQueryAsync(sql);
+		if (!itemIDs) {
+			return "";
+		}
+		var undownloaded = {};
+		for (let i=0; i<itemIDs.length; i++) {
+			let itemID = itemIDs[i];
+			let item = yield Zotero.Items.getAsync(itemID);
+			let libraryID = item.libraryID
+			if (!undownloaded[libraryID]) {
+				undownloaded[libraryID] = [];
+			}
+			undownloaded[libraryID].push(item.key);
+		}
+		var data = "";
+		for (let libraryID in undownloaded) {
+			for (let i = 0; i < undownloaded[libraryID].length; i++) {
+				data += "&" + encodeURIComponent("ftkeys[" + libraryID + "][" + i + "]")
+					+ "=" + undownloaded[libraryID][i];
+			}
+		}
+		return data;
+	});
+	
+	
+	/**
+	 * Save full-text content and stats to a cache file
+	 *
+	 * @param {Integer} libraryID
+	 * @param {String} key - Item key
+	 * @param {Object} data
+	 * @param {String} data.content
+	 * @param {Integer} [data.indexedChars]
+	 * @param {Integer} [data.totalChars]
+	 * @param {Integer} [data.indexedPages]
+	 * @param {Integer} [data.totalPages]
+	 * @param {Integer} version
+	 * @return {Promise}
+	 */
+	this.setItemContent = Zotero.Promise.coroutine(function* (libraryID, key, data, version) {
+		var libraryKey = libraryID + "/" + key;
+		var item = Zotero.Items.getByLibraryAndKey(libraryID, key);
+		if (!item) {
+			let msg = "Item " + libraryKey + " not found setting full-text content";
+			Zotero.logError(msg);
+			return;
+		}
+		var itemID = item.id;
+		var currentVersion = this.getItemVersion(itemID)
+		
+		var processorCacheFile = this.getItemProcessorCacheFile(item);
+		var itemCacheFile = this.getItemCacheFile(item);
+		
+		// If a storage directory doesn't exist, create it
+		if (!processorCacheFile.parent.exists()) {
+			yield Zotero.Attachments.createDirectoryForItem(item);
+		}
+		
+		// If the local version is 0 but the text matches, just update the version
+		if (currentVersion == 0 && itemCacheFile.exists()
+				&& (yield Zotero.File.getContentsAsync(itemCacheFile)) == text) {
+			Zotero.debug("Current full-text content matches remote for item "
+				+ libraryKey + " -- updating version");
+			var synced = SYNC_STATE_IN_SYNC;
+			yield Zotero.DB.queryAsync("UPDATE fulltextItems SET version=? WHERE itemID=?", [version, itemID]);
+		}
+		else {
+			Zotero.debug("Writing full-text content and data for item " + libraryKey
+				+ " to " + processorCacheFile.path);
+			yield Zotero.File.putContentsAsync(processorCacheFile, JSON.stringify({
+				indexedChars: data.indexedChars,
+				totalChars: data.totalChars,
+				indexedPages: data.indexedPages,
+				totalPages: data.totalPages,
+				version: version,
+				text: data.content
+			}));
+			var synced = SYNC_STATE_TO_PROCESS;
+		}
+		
+		// If indexed previously, update the sync state
+		if (currentVersion !== false) {
+			yield Zotero.DB.queryAsync("UPDATE fulltextItems SET synced=? WHERE itemID=?", [synced, itemID]);
+		}
+		// If not yet indexed, add an empty row
+		else {
+			yield Zotero.DB.queryAsync(
+				"REPLACE INTO fulltextItems (itemID, version, synced) VALUES (?, 0, ?)",
+				[itemID, synced]
+			);
+		}
+		
+		this.startContentProcessor();
+	});
+	
+	
+	/**
+	 * Start the idle observer for the background content processor
+	 */
+	this.startContentProcessor = function () {
+		if (!_idleObserverIsRegistered) {
+			Zotero.debug("Initializing full-text content ingester idle observer");
+			var idleService = Components.classes["@mozilla.org/widget/idleservice;1"]
+					.getService(Components.interfaces.nsIIdleService);
+			idleService.addIdleObserver(this.idleObserver, _idleObserverDelay);
+			_idleObserverIsRegistered = true;
+		}
 	}
+	
+	/**
+	 * Stop the idle observer and a running timer, if there is one
+	 */
+	this.stopContentProcessor = function () {
+		if (_idleObserverIsRegistered) {
+			var idleService = Components.classes["@mozilla.org/widget/idleservice;1"]
+				.getService(Components.interfaces.nsIIdleService);
+			idleService.removeIdleObserver(this.idleObserver, _idleObserverDelay);
+			_idleObserverIsRegistered = false;
+		}
+		
+		if (_processorTimer) {
+			_processorTimer.cancel();
+			_processorTimer = null;
+		}
+	}
+	
+	/**
+	 * Find items marked as having unprocessed cache files, run cache file processing on one item, and
+	 * after a short delay call self again with the remaining items
+	 *
+	 * @param {Array<Integer>} itemIDs  An array of itemIDs to process; if this
+	 *                                  is omitted, a database query is made
+	 *                                  to find unprocessed content
+	 * @return {Boolean}  TRUE if there's more content to process; FALSE otherwise
+	 */
+	this.processUnprocessedContent = Zotero.Promise.coroutine(function* (itemIDs) {
+		if (!itemIDs) {
+			Zotero.debug("Checking for unprocessed full-text content");
+			let sql = "SELECT itemID FROM fulltextItems WHERE synced="
+				+ SYNC_STATE_TO_PROCESS;
+			itemIDs = yield Zotero.DB.columnQueryAsync(sql);
+		}
+		
+		var origLen = itemIDs.length;
+		itemIDs = itemIDs.filter(function (id) {
+			return !(id in _processorBlacklist);
+		});
+		if (itemIDs.length < origLen) {
+			let skipped = (origLen - itemIDs.length);
+			Zotero.debug("Skipping large full-text content for " + skipped
+				+ " item" + (skipped == 1 ? '' : 's'));
+		}
+		
+		// If there's no more unprocessed content, stop the idle observer
+		if (!itemIDs.length) {
+			Zotero.debug("No unprocessed full-text content found");
+			this.stopContentProcessor();
+			return;
+		}
+		
+		let itemID = itemIDs.shift();
+		let item = yield Zotero.Items.getAsync(itemID);
+		
+		Zotero.debug("Processing full-text content for item " + item.libraryKey);
+		
+		yield Zotero.Fulltext.indexFromProcessorCache(itemID);
+		
+		// If there are remaining items, call self again after a short delay. The delay allows for
+		// processing to be interrupted if the user returns from idle
+		if (itemIDs.length) {
+			if (!_processorTimer) {
+				_processorTimer = Components.classes["@mozilla.org/timer;1"]
+					.createInstance(Components.interfaces.nsITimer);
+			}
+			_processorTimer.initWithCallback(
+				function () {
+					Zotero.Fulltext.processUnprocessedContent(itemIDs);
+				},
+				100,
+				Components.interfaces.nsITimer.TYPE_ONE_SHOT
+			);
+		}
+	});
+	
+	this.idleObserver = {
+		observe: function (subject, topic, data) {
+			// On idle, start the background processor
+			if (topic == 'idle') {
+				Zotero.Fulltext.processUnprocessedContent();
+			}
+			// When back from idle, stop the processor (but keep the idle
+			// observer registered)
+			else if (topic == 'active') {
+				if (_processorTimer) {
+					Zotero.debug("Stopping full-text content processor");
+					_processorTimer.cancel();
+				}
+			}
+		}
+	};
+	
+	
+	/**
+	 * @param {Number} itemID
+	 * @return {Promise<Boolean>}
+	 */
+	this.indexFromProcessorCache = Zotero.Promise.coroutine(function* (itemID) {
+		try {
+			var item = yield Zotero.Items.getAsync(itemID);
+			var cacheFile = this.getItemProcessorCacheFile(item);
+			if (!cacheFile.exists())  {
+				Zotero.debug("Full-text content processor cache file doesn't exist for item " + itemID);
+				yield Zotero.DB.queryAsync(
+					"UPDATE fulltextItems SET synced=? WHERE itemID=?", [SYNC_STATE_UNSYNCED, itemID]
+				);
+				return false;
+			}
+			
+			var json = yield Zotero.File.getContentsAsync(cacheFile);
+			var data = JSON.parse(json);
+			
+			// Write the text content to the regular cache file
+			var item = yield Zotero.Items.getAsync(itemID);
+			cacheFile = this.getItemCacheFile(item);
+			Zotero.debug("Writing full-text content to " + cacheFile.path);
+			yield Zotero.File.putContentsAsync(cacheFile, data.text);
+			
+			yield indexString(
+				data.text,
+				"UTF-8",
+				itemID,
+				{
+					indexedChars: data.indexedChars,
+					totalChars: data.totalChars,
+					indexedPages: data.indexedPages,
+					totalPages: data.totalPages
+				},
+				data.version,
+				1
+			);
+			
+			return true;
+		}
+		catch (e) {
+			Components.utils.reportError(e);
+			Zotero.debug(e, 1);
+			return false;
+		};
+	});
+	
+	//
+	// End full-text content syncing
+	//
 	
 	
 	/*
-	 * Scan a file for a text string
+	 * Scan a string for another string
 	 *
 	 * _items_ -- one or more attachment items to search
 	 * _searchText_ -- text pattern to search for
@@ -542,21 +1177,7 @@ Zotero.Fulltext = new function(){
 	 *
 	 * - Slashes in regex are optional
 	 */
-	function findTextInFile(file, charset, searchText, mode){
-		Zotero.debug("Searching for text '" + searchText + "' in " + file.path);
-		
-		var maxLength = Zotero.Prefs.get('fulltext.textMaxLength');
-		var str = Zotero.File.getContents(file, charset, maxLength);
-		
-		// If not binary mode, convert HTML to text
-		if (!mode || mode.indexOf('Binary')==-1){
-			// Split elements to avoid word concatentation
-			str = str.replace(/(>)/g, '$1 ');
-			
-			// Parse to avoid searching on HTML
-			str = this.HTMLToText(str);
-		}
-		
+	function findTextInString(content, searchText, mode) {
 		switch (mode){
 			case 'regexp':
 			case 'regexpCS':
@@ -577,7 +1198,7 @@ Zotero.Fulltext = new function(){
 				
 				try {
 					var re = new RegExp(searchText, flags);
-					var matches = re.exec(str);
+					var matches = re.exec(content);
 				}
 				catch (e) {
 					Zotero.debug(e, 1);
@@ -585,7 +1206,7 @@ Zotero.Fulltext = new function(){
 				}
 				if (matches){
 					Zotero.debug("Text found");
-					return str.substr(matches.index, 50);
+					return content.substr(matches.index, 50);
 				}
 				
 				break;
@@ -593,19 +1214,19 @@ Zotero.Fulltext = new function(){
 			default:
 				// Case-insensitive
 				searchText = searchText.toLowerCase();
-				str = str.toLowerCase();
+				content = content.toLowerCase();
 				
-				var pos = str.indexOf(searchText);
+				var pos = content.indexOf(searchText);
 				if (pos!=-1){
 					Zotero.debug('Text found');
-					return str.substr(pos, 50);
+					return content.substr(pos, 50);
 				}
 		}
 		
 		return -1;
 	}
 	
-	/*
+	/**
 	 * Scan item files for a text string
 	 *
 	 * _items_ -- one or more attachment items to search
@@ -618,67 +1239,102 @@ Zotero.Fulltext = new function(){
 	 * Note:
 	 *  - Slashes in regex are optional
 	 *  - Add 'Binary' to the mode to search all files, not just text files
+	 *
+	 * @return {Promise<Array<Object>>} A promise for an array of match objects, with 'id' containing
+	 *                                  an itemID and 'match' containing a string snippet
 	 */
-	function findTextInItems(items, searchText, mode){
+	this.findTextInItems = Zotero.Promise.coroutine(function* (items, searchText, mode){
 		if (!searchText){
 			return [];
 		}
 		
-		var items = Zotero.Items.get(items);
+		var items = yield Zotero.Items.getAsync(items);
 		var found = [];
 		
-		for each(var i in items){
-			if (!i.isAttachment()){
+		for (let i=0; i<items.length; i++) {
+			let item = items[i];
+			if (!item.isAttachment()) {
 				continue;
 			}
 			
-			var file = i.getFile();
-			if (!file){
-				continue;
-			}
+			let itemID = item.id;
+			let content;
+			let mimeType = item.attachmentContentType;
+			let maxLength = Zotero.Prefs.get('fulltext.textMaxLength');
+			let binaryMode = mode && mode.indexOf('Binary') != -1;
 			
-			var mimeType = i.attachmentMIMEType;
 			if (isCachedMIMEType(mimeType)) {
-				var file = this.getItemCacheFile(i.id);
+				let file = this.getItemCacheFile(item);
 				if (!file.exists()) {
 					continue;
 				}
 				
-				mimeType = 'text/plain';
-				var charset = 'utf-8';
+				Zotero.debug("Searching for text '" + searchText + "' in " + file.path);
+				content = yield Zotero.File.getContentsAsync(file, 'utf-8', maxLength);
 			}
 			else {
 				// If not binary mode, only scan plaintext files
-				if (!mode || mode.indexOf('Binary') == -1) {
+				if (!binaryMode) {
 					if (!Zotero.MIME.isTextType(mimeType)) {
 						Zotero.debug('Not scanning MIME type ' + mimeType, 4);
 						continue;
 					}
 				}
 				
-				var charset = i.attachmentCharset;
+				// Check for a cache file
+				let cacheFile = this.getItemCacheFile(item);
+				if (cacheFile.exists()) {
+					Zotero.debug("Searching for text '" + searchText + "' in " + cacheFile.path);
+					content = yield Zotero.File.getContentsAsync(cacheFile, 'utf-8', maxLength);
+				}
+				else {
+					// If that doesn't exist, check for the actual file
+					let path = yield item.getFilePathAsync();
+					if (!path) {
+						continue;
+					}
+					
+					Zotero.debug("Searching for text '" + searchText + "' in " + path);
+					content = yield Zotero.File.getContentsAsync(path, item.attachmentCharset);
+					
+					// If HTML and not binary mode, convert to text
+					if (mimeType == 'text/html' && !binaryMode) {
+						// Include in the cache file only as many characters as we've indexed
+						let chars = yield getChars(itemID);
+						
+						let obj = yield convertItemHTMLToText(
+							itemID, content, chars ? chars.indexedChars : null
+						);
+						content = obj.text;
+					}
+				}
 			}
 			
-			var match = this.findTextInFile(file, charset, searchText, mode);
-			
-			if (match != -1){
-				found.push({id:i.getID(), match:match});
+			let match = findTextInString(content, searchText, mode);
+			if (match != -1) {
+				found.push({
+					id: itemID,
+					match: match
+				});
 			}
 		}
 		
 		return found;
-	}
+	});
 	
 	
-	function clearItemWords(itemID, skipCacheClear) {
-		Zotero.DB.beginTransaction();
+	/**
+	 * @requireTransaction
+	 */
+	this.clearItemWords = Zotero.Promise.coroutine(function* (itemID, skipCacheClear) {
+		Zotero.DB.requireTransaction();
+		
 		var sql = "SELECT rowid FROM fulltextItems WHERE itemID=? LIMIT 1";
-		var indexed = Zotero.DB.valueQuery(sql, itemID);
+		var indexed = yield Zotero.DB.valueQueryAsync(sql, itemID);
 		if (indexed) {
-			Zotero.DB.query("DELETE FROM fulltextItems WHERE itemID=?", itemID);
-			Zotero.DB.query("DELETE FROM fulltextItemWords WHERE itemID=?", itemID);
+			yield Zotero.DB.queryAsync("DELETE FROM fulltextItemWords WHERE itemID=?", itemID);
+			yield Zotero.DB.queryAsync("DELETE FROM fulltextItems WHERE itemID=?", itemID);
 		}
-		Zotero.DB.commitTransaction();
 		
 		if (indexed) {
 			Zotero.Prefs.set('purge.fulltext', true);
@@ -686,28 +1342,34 @@ Zotero.Fulltext = new function(){
 		
 		if (!skipCacheClear) {
 			// Delete fulltext cache file if there is one
-			this.clearCacheFile(itemID);
+			yield clearCacheFile(itemID);
 		}
-	}
+	});
 	
 	
-	function getPages(itemID, force) {
+	/**
+	 * @return {Promise}
+	 */
+	this.getPages = function (itemID, force) {
 		var sql = "SELECT indexedPages, totalPages AS total "
 			+ "FROM fulltextItems WHERE itemID=?";
-		return Zotero.DB.rowQuery(sql, itemID);
+		return Zotero.DB.rowQueryAsync(sql, itemID);
 	}
 	
 	
-	/*
+	/**
 	 * Gets the number of pages from the PDF info cache file
+	 *
+	 * @private
+	 * @return {Promise}
 	 */
-	function getTotalPagesFromFile(itemID) {
-		var file = Zotero.Attachments.getStorageDirectory(itemID);
-		file.append(this.pdfInfoCacheFile);
+	var getTotalPagesFromFile = Zotero.Promise.coroutine(function* (itemID) {
+		var file = Zotero.Attachments.getStorageDirectoryByID(itemID);
+		file.append(Zotero.Fulltext.pdfInfoCacheFile);
 		if (!file.exists()) {
 			return false;
 		}
-		var contents = Zotero.File.getContents(file);
+		var contents = yield Zotero.File.getContentsAsync(file);
 		try {
 			// Parse pdfinfo output
 			var pages = contents.match('Pages:[^0-9]+([0-9]+)')[1];
@@ -717,24 +1379,29 @@ Zotero.Fulltext = new function(){
 			return false;
 		}
 		return pages;
-	}
+	});
 	
 	
+	/**
+	 * @return {Promise}
+	 */
 	function getChars(itemID) {
 		var sql = "SELECT indexedChars, totalChars AS total "
 			+ "FROM fulltextItems WHERE itemID=?";
-		return Zotero.DB.rowQuery(sql, itemID);
+		return Zotero.DB.rowQueryAsync(sql, itemID);
 	}
 	
 	
-	/*
+	/**
 	 * Gets the number of characters from the PDF converter cache file
+	 *
+	 * @return {Promise}
 	 */
-	function getTotalCharsFromFile(itemID) {
-		var item = Zotero.Items.get(itemID);
-		switch (item.attachmentMIMEType) {
+	var getTotalCharsFromFile = Zotero.Promise.coroutine(function* (itemID) {
+		var item = yield Zotero.Items.getAsync(itemID);
+		switch (item.attachmentContentType) {
 			case 'application/pdf':
-				var file = Zotero.Attachments.getStorageDirectory(itemID);
+				var file = Zotero.Attachments.getStorageDirectory(item);
 				file.append(this.pdfConverterCacheFile);
 				if (!file.exists()) {
 					return false;
@@ -748,41 +1415,58 @@ Zotero.Fulltext = new function(){
 				}
 		}
 		
-		return Zotero.File.getContents(file).length;
-	}
+		var contents = yield Zotero.File.getContentsAsync(file);
+		return contents.length;
+	});
 	
 	
+	/**
+	 * @return {Promise}
+	 */
 	function setPages(itemID, obj) {
 		var sql = "UPDATE fulltextItems SET indexedPages=?, totalPages=? WHERE itemID=?";
-		Zotero.DB.query(sql, [obj.indexed ? obj.indexed : null,
-			obj.total ? obj.total : null, itemID]);
+		return Zotero.DB.queryAsync(
+			sql,
+			[
+				obj.indexed ? parseInt(obj.indexed) : null,
+				obj.total ? parseInt(obj.total) : null,
+				itemID
+			]
+		);
 	}
 	
 	
+	/**
+	 * @param {Number} itemID
+	 * @param {Object} obj
+	 * @return {Promise}
+	 */
 	function setChars(itemID, obj) {
 		var sql = "UPDATE fulltextItems SET indexedChars=?, totalChars=? WHERE itemID=?";
-		Zotero.DB.query(sql, [obj.indexed ? obj.indexed : null,
-			obj.total ? obj.total : null, itemID]);
+		return Zotero.DB.queryAsync(
+			sql,
+			[
+				obj.indexed ? parseInt(obj.indexed) : null,
+				obj.total ? parseInt(obj.total) : null,
+				itemID
+			]
+		);
 	}
 	
 	
 	/*
 	 * Gets the indexed state of an item, 
 	 */
-	function getIndexedState(itemID) {
-		var item = Zotero.Items.get(itemID);
-		if (!item) {
-			throw ("Invalid item " + itemID + " in Zotero.Fulltext.getIndexedState()");
-		}
-		
+	this.getIndexedState = Zotero.Promise.coroutine(function* (item) {
 		if (!item.isAttachment()) {
-			throw ('Item ' + itemID + ' is not an attachment in Zotero.Fulltext.getIndexedState()');
+			throw new Error('Item is not an attachment');
 		}
 		
-		switch (item.attachmentMIMEType) {
+		var itemID = item.id;
+		switch (item.attachmentContentType) {
 			// Use pages for PDFs
 			case 'application/pdf':
-				var pages = this.getPages(itemID);
+				var pages = yield this.getPages(itemID);
 				if (pages) {
 					var indexedPages = pages.indexedPages;
 					var totalPages = pages.total;
@@ -807,7 +1491,7 @@ Zotero.Fulltext = new function(){
 			
 			// Use chars
 			default:
-				var chars = this.getChars(itemID);
+				var chars = yield getChars(itemID);
 				if (chars) {
 					var indexedChars = chars.indexedChars;
 					var totalChars = chars.total;
@@ -830,44 +1514,55 @@ Zotero.Fulltext = new function(){
 				}
 		}
 		return status;
-	}
+	});
 	
 	
-	this.isFullyIndexed = function (itemID) {
-		if (!itemID) {
-			throw ("itemID not provided in Zotero.Fulltext.isFullyIndexed()");
-		}
-		return this.getIndexedState(itemID) == this.INDEX_STATE_INDEXED;
-	}
+	this.isFullyIndexed = Zotero.Promise.coroutine(function* (item) {
+		return (yield this.getIndexedState(item)) == this.INDEX_STATE_INDEXED;
+	});
 	
 	
-	function getIndexStats() {
+	/**
+	 * @return {Promise}
+	 */
+	this.getIndexStats = Zotero.Promise.coroutine(function* () {
 		var sql = "SELECT COUNT(*) FROM fulltextItems WHERE "
 			+ "(indexedPages IS NOT NULL AND indexedPages=totalPages) OR "
 			+ "(indexedChars IS NOT NULL AND indexedChars=totalChars)"
-		var indexed = Zotero.DB.valueQuery(sql);
+		var indexed = yield Zotero.DB.valueQueryAsync(sql);
 		
 		var sql = "SELECT COUNT(*) FROM fulltextItems WHERE "
 			+ "(indexedPages IS NOT NULL AND indexedPages<totalPages) OR "
 			+ "(indexedChars IS NOT NULL AND indexedChars<totalChars)"
-		var partial = Zotero.DB.valueQuery(sql);
+		var partial = yield Zotero.DB.valueQueryAsync(sql);
 		
 		var sql = "SELECT COUNT(*) FROM itemAttachments WHERE itemID NOT IN "
 			+ "(SELECT itemID FROM fulltextItems WHERE "
 			+ "indexedPages IS NOT NULL OR indexedChars IS NOT NULL)";
-		var unindexed = Zotero.DB.valueQuery(sql);
+		var unindexed = yield Zotero.DB.valueQueryAsync(sql);
 		
 		var sql = "SELECT COUNT(*) FROM fulltextWords";
-		var words = Zotero.DB.valueQuery(sql);
+		var words = yield Zotero.DB.valueQueryAsync(sql);
 		
-		return { indexed: indexed, partial: partial, unindexed: unindexed,
-			words: words };
+		return {
+			indexed: indexed,
+			partial: partial,
+			unindexed: unindexed,
+			words: words
+		};
+	});
+	
+	
+	this.getItemCacheFile = function (item) {
+		var cacheFile = Zotero.Attachments.getStorageDirectory(item);
+		cacheFile.append(this.pdfConverterCacheFile);
+		return cacheFile;
 	}
 	
 	
-	this.getItemCacheFile = function (itemID) {
-		var cacheFile = Zotero.Attachments.getStorageDirectory(itemID);
-		cacheFile.append(self.pdfConverterCacheFile);
+	this.getItemProcessorCacheFile = function (item) {
+		var cacheFile = Zotero.Attachments.getStorageDirectory(item);
+		cacheFile.append(_processorCacheFile);
 		return cacheFile;
 	}
 	
@@ -877,11 +1572,9 @@ Zotero.Fulltext = new function(){
 	 *
 	 * Item must be a non-web-link attachment that isn't already fully indexed
 	 */
-	function canReindex(itemID) {
-		var item = Zotero.Items.get(itemID);
-		if (item && item.isAttachment() && item.attachmentLinkMode !=
-				Zotero.Attachments.LINK_MODE_LINKED_URL) {
-			switch (this.getIndexedState(itemID)) {
+	this.canReindex = Zotero.Promise.coroutine(function* (item) {
+		if (item.isAttachment() && item.attachmentLinkMode != Zotero.Attachments.LINK_MODE_LINKED_URL) {
+			switch (yield this.getIndexedState(item)) {
 				case this.INDEX_STATE_UNAVAILABLE:
 				case this.INDEX_STATE_UNINDEXED:
 				case this.INDEX_STATE_PARTIAL:
@@ -891,14 +1584,14 @@ Zotero.Fulltext = new function(){
 					return true;
 			}
 		}
-		
 		return false;
-	}
+	});
 	
 	
-	function rebuildIndex(unindexedOnly){
-		Zotero.DB.beginTransaction();
-		
+	/**
+	 * @return {Promise}
+	 */
+	this.rebuildIndex = Zotero.Promise.coroutine(function* (unindexedOnly) {
 		// Get all attachments other than web links
 		var sql = "SELECT itemID FROM itemAttachments WHERE linkMode!="
 			+ Zotero.Attachments.LINK_MODE_LINKED_URL;
@@ -906,55 +1599,57 @@ Zotero.Fulltext = new function(){
 			sql += " AND itemID NOT IN (SELECT itemID FROM fulltextItems "
 				+ "WHERE indexedChars IS NOT NULL OR indexedPages IS NOT NULL)";
 		}
-		var items = Zotero.DB.columnQuery(sql);
+		var items = yield Zotero.DB.columnQueryAsync(sql);
 		if (items) {
-			Zotero.DB.query("DELETE FROM fulltextItemWords WHERE itemID IN (" + sql + ")");
-			Zotero.DB.query("DELETE FROM fulltextItems WHERE itemID IN (" + sql + ")");
-			this.indexItems(items, false, true);
-		}
-		Zotero.DB.commitTransaction();
-	}
-	
-	
-	/*
-	 * Clears full-text word index and all full-text cache files
-	 */
-	function clearIndex(skipLinkedURLs) {
-		Zotero.DB.beginTransaction();
-		
-		var sql = "DELETE FROM fulltextItems";
-		if (skipLinkedURLs) {
-			var linkSQL = "SELECT itemID FROM itemAttachments WHERE linkMode ="
-				+ Zotero.Attachments.LINK_MODE_LINKED_URL;
+			yield Zotero.DB.executeTransaction(function* () {
+				yield Zotero.DB.queryAsync("DELETE FROM fulltextItemWords WHERE itemID IN (" + sql + ")");
+				yield Zotero.DB.queryAsync("DELETE FROM fulltextItems WHERE itemID IN (" + sql + ")");
+			});
 			
-			sql += " WHERE itemID NOT IN (" + linkSQL + ")";
+			yield this.indexItems(items, false, true);
 		}
-		Zotero.DB.query(sql);
-		
-		sql = "DELETE FROM fulltextItemWords";
-		if (skipLinkedURLs) {
-			sql += " WHERE itemID NOT IN (" + linkSQL + ")";
-		}
-		Zotero.DB.query(sql);
-		
-		if (skipLinkedURLs) {
-			this.purgeUnusedWords();
-		}
-		else {
-			Zotero.DB.query("DELETE FROM fulltextWords");
-		}
-		
-		this.clearCacheFiles();
-		
-		Zotero.DB.commitTransaction();
+	});
+	
+	
+	/**
+	 * Clears full-text word index and all full-text cache files
+	 *
+	 * @return {Promise}
+	 */
+	this.clearIndex = function (skipLinkedURLs) {
+		return Zotero.DB.executeTransaction(function* () {
+			var sql = "DELETE FROM fulltextItems";
+			if (skipLinkedURLs) {
+				var linkSQL = "SELECT itemID FROM itemAttachments WHERE linkMode ="
+					+ Zotero.Attachments.LINK_MODE_LINKED_URL;
+				
+				sql += " WHERE itemID NOT IN (" + linkSQL + ")";
+			}
+			yield Zotero.DB.queryAsync(sql);
+			
+			sql = "DELETE FROM fulltextItemWords";
+			if (skipLinkedURLs) {
+				sql += " WHERE itemID NOT IN (" + linkSQL + ")";
+			}
+			yield Zotero.DB.queryAsync(sql);
+			
+			if (skipLinkedURLs) {
+				yield this.purgeUnusedWords();
+			}
+			else {
+				yield Zotero.DB.queryAsync("DELETE FROM fulltextWords");
+			}
+			
+			yield clearCacheFiles();
+		}.bind(this));
 	}
 	
 	
 	/*
 	 * Clears cache file for an item
 	 */
-	function clearCacheFile(itemID) {
-		var item = Zotero.Items.get(itemID);
+	var clearCacheFile = Zotero.Promise.coroutine(function* (itemID) {
+		var item = yield Zotero.Items.getAsync(itemID);
 		if (!item) {
 			return;
 		}
@@ -965,35 +1660,31 @@ Zotero.Fulltext = new function(){
 		}
 		
 		Zotero.debug('Clearing full-text cache file for item ' + itemID);
-		switch (item.attachmentMIMEType) {
-			case 'application/pdf':
-				var cacheFile = this.getItemCacheFile(itemID);
-				if (cacheFile.exists()) {
-					try {
-						cacheFile.remove(false);
-					}
-					catch (e) {
-						Zotero.File.checkFileAccessError(e, cacheFile, 'delete');
-					}
-				}
-				break;
+		var cacheFile = Zotero.Fulltext.getItemCacheFile(item);
+		if (cacheFile.exists()) {
+			try {
+				cacheFile.remove(false);
+			}
+			catch (e) {
+				Zotero.File.checkFileAccessError(e, cacheFile, 'delete');
+			}
 		}
-	}
+	});
 	
 	
 	/*
 	 * Clear cache files for all attachments
 	 */
-	function clearCacheFiles(skipLinkedURLs) {
+	var clearCacheFiles = Zotero.Promise.coroutine(function* (skipLinkedURLs) {
 		var sql = "SELECT itemID FROM itemAttachments";
 		if (skipLinkedURLs) {
 			sql += " WHERE linkMode != " + Zotero.Attachments.LINK_MODE_LINKED_URL;
 		}
-		var items = Zotero.DB.columnQuery(sql);
+		var items = yield Zotero.DB.columnQueryAsync(sql);
 		for (var i=0; i<items.length; i++) {
-			this.clearCacheFile(items[i]);
+			yield clearCacheFile(items[i]);
 		}
-	}
+	});
 	
 	
 	/*
@@ -1003,112 +1694,162 @@ Zotero.Fulltext = new function(){
 	*/
 	
 	
-	function purgeUnusedWords() {
+	/**
+	 * @return {Promise}
+	 */
+	this.purgeUnusedWords = Zotero.Promise.coroutine(function* () {
 		if (!Zotero.Prefs.get('purge.fulltext')) {
 			return;
 		}
 		
 		var sql = "DELETE FROM fulltextWords WHERE wordID NOT IN "
 					+ "(SELECT wordID FROM fulltextItemWords)";
-		Zotero.DB.query(sql);
+		yield Zotero.DB.queryAsync(sql);
 		
 		Zotero.Prefs.set('purge.fulltext', false)
-	}
+	});
 	
 	
-	function HTMLToText(text){
-		var	nsIFC =
-			Components.classes['@mozilla.org/widget/htmlformatconverter;1'].
-				createInstance(Components.interfaces.nsIFormatConverter);
-		var from = Components.classes['@mozilla.org/supports-string;1'].
-			createInstance(Components.interfaces.nsISupportsString);
-		from.data = text;
-		var to = {value:null};
+	/**
+	 * Convert HTML to text for an item and cache the result
+	 *
+	 * @return {Promise}
+	 */
+	var convertItemHTMLToText = Zotero.Promise.coroutine(function* (itemID, html, maxLength) {
+		// Split elements to avoid word concatentation
+		html = html.replace(/>/g, '> ');
+		
+		var text = HTMLToText(html);
+		var totalChars = text.length;
+		
+		if (maxLength) {
+			text = text.substr(0, maxLength);
+		}
+		
+		// Write the converted text to a cache file
+		var item = yield Zotero.Items.getAsync(itemID);
+		var cacheFile = Zotero.Fulltext.getItemCacheFile(item);
+		Zotero.debug("Writing converted full-text HTML content to " + cacheFile.path);
+		if (!cacheFile.parent.exists()) {
+			yield Zotero.Attachments.createDirectoryForItem(item);
+		}
+		yield Zotero.File.putContentsAsync(cacheFile, text)
+		.catch(function (e) {
+			Zotero.debug(e, 1);
+			Components.utils.reportError(e);
+		});
+		
+		return {
+			text: text,
+			totalChars: totalChars
+		};
+	});
+	
+	function HTMLToText(html) {
+		var	nsIFC = Components.classes['@mozilla.org/widget/htmlformatconverter;1']
+			.createInstance(Components.interfaces.nsIFormatConverter);
+		var from = Components.classes['@mozilla.org/supports-string;1']
+			.createInstance(Components.interfaces.nsISupportsString);
+		from.data = html;
+		var to = { value: null };
 		try {
-			nsIFC.convert('text/html', from, from.toString().length,
-				'text/unicode', to, {});
+			nsIFC.convert('text/html', from, from.toString().length, 'text/unicode', to, {});
 			to = to.value.QueryInterface(Components.interfaces.nsISupportsString);
 			return to.toString();
 		}
-		catch(e){
+		catch(e) {
 			Zotero.debug(e, 1);
-			return text;
+			return html;
 		}
 	}
 	
 	
-	function semanticSplitter(text, charset){
+	/**
+	 * @param {String} text
+	 * @param {String} [charset]
+	 * @return {Array<String>}
+	 */
+	this.semanticSplitter = function (text, charset) {
 		if (!text){
 			Zotero.debug('No text to index');
-			return;
+			return [];
 		}
 		
-		text = _markTroubleChars(text);
+		try {
+			if (charset && charset != 'utf-8') {
+				text = this.decoder.convertStringToUTF8(text, charset, true);
+			}
+		} catch (err) {
+			Zotero.debug("Error converting from charset " + charset, 1);
+			Zotero.debug(err, 1);
+		}
 		
-		var serv = Components.classes["@mozilla.org/intl/semanticunitscanner;1"]
-				.createInstance(Components.interfaces.nsISemanticUnitScanner);
-		
-		var words = [], unique = {}, begin = {}, end = {}, nextPos = 0;
-		serv.start(charset ? charset : null);
-		do {
-			var next = serv.next(text, text.length, nextPos, true, begin, end);
-			var str = text.substring(begin.value, end.value);
+		var words = {};
+		var word = '';
+		var cclass = null;
+		var strlen = text.length;
+		for (var i = 0; i < strlen; i++) {
+			var charCode = text.charCodeAt(i);
+			var cc = null;
 			
-			// Skip non-breaking spaces
-			if (!str || str.charCodeAt(0)==32 || str.charCodeAt(0)==160){
-				nextPos = end.value;
-				begin = {}, end = {};
-				continue;
+			// Adjustments
+			if (charCode == 8216 || charCode == 8217) {
+				// Curly quotes to straight
+				var c = "'";
+			}
+			else {
+				var c = text.charAt(i);
 			}
 			
-			// Create alphanum hash keys out of the character codes
-			var lc = str.toLowerCase();
-			
-			// And store the unique ones
-			if (!unique[lc]){
-				unique[lc] = true;
+			// Consider single quote in the middle of a word a letter
+			if (c == "'" && word !== '') {
+				cc = kWbClassAlphaLetter;
 			}
 			
-			nextPos = end.value;
-			begin = {}, end = {};
-		}
-		while (next);
-		
-		for (var i in unique){
-			words.push(_restoreTroubleChars(i));
-		}
-		
-		return words;
-	}
-	
-	
-	/*
-	 * Add spaces between elements, since HTMLToText doesn't
-	 *
-	 * NOTE: SLOW AND NOT USED!
-	 */
-	function _separateElements(node){
-		var next = node;
-		do {
-			if (next.hasChildNodes()){
-				_separateElements(next.firstChild);
+			if (!cc) {
+				cc = getClass(c, charCode);
 			}
 			
-			var space = node.ownerDocument.createTextNode(' ');
-			next.parentNode.insertBefore(space, next);
+			// When we reach space or punctuation, store the previous word if there is one
+			if (cc == kWbClassSpace || cc == kWbClassPunct) {
+				if (word != '') {
+					words[word] = true;
+					word = '';
+				}
+			// When we reach Han character, store previous word and add Han character
+			} else if (cc == kWbClassHanLetter) {
+				if (word !== '') {
+					words[word] = true;
+					word = '';
+				}
+				words[c] = true;
+			// Otherwise, if character class hasn't changed, keep adding characters to previous word
+			} else if (cc == cclass) {
+				word += c.toLowerCase();
+			// If character class is different, store previous word and start new word
+			} else {
+				if (word !== '') {
+					words[word] = true;
+				}
+				word = c.toLowerCase();
+			}
+			cclass = cc;
 		}
-		while (next = next.nextSibling);
+		if (word !== '') {
+			words[word] = true;
+		}
+		
+		return Object.keys(words).map(function (w) {
+			// Trim trailing single quotes
+			if (w.slice(-1) == "'") {
+				w = w.substr(0, w.length - 1);
+			}
+			return w;
+		});
 	}
 	
-	
-	function _markTroubleChars(text){
-		text = text.replace("'", "zoteroapostrophe");
-		return text;
+	function _getScriptExtension() {
+		return Zotero.isWin ? 'vbs' : 'sh';
 	}
-	
-	
-	function _restoreTroubleChars(text){
-		text = text.replace("zoteroapostrophe", "'");
-		return text;
-	}
+
 }

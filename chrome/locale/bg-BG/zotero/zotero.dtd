@@ -1,12 +1,19 @@
+<!ENTITY zotero.general.yes "Yes">
+<!ENTITY zotero.general.no "No">
 <!ENTITY zotero.general.optional "(По желание)">
 <!ENTITY zotero.general.note "Бележка:">
 <!ENTITY zotero.general.selectAll "Избор на всички">
 <!ENTITY zotero.general.deselectAll "Отказ на всички">
 <!ENTITY zotero.general.edit "Редактира">
 <!ENTITY zotero.general.delete "Изтрива">
+<!ENTITY zotero.general.ok "OK">
+<!ENTITY zotero.general.cancel "Cancel">
+<!ENTITY zotero.general.refresh "Refresh">
+<!ENTITY zotero.general.saveAs "Save As…">
+<!ENTITY zotero.general.advancedOptions.label "Advanced Options">
 
 <!ENTITY zotero.errorReport.title "Zotero Error Report">
-<!ENTITY zotero.errorReport.unrelatedMessages "Дневника с грешките може да съдържа съобщения несвързани с Зотеро.">
+<!ENTITY zotero.errorReport.unrelatedMessages "This may include messages unrelated to Zotero.">
 <!ENTITY zotero.errorReport.submissionInProgress "Моля изчакайте докато бъде подаден отчета с грешките.">
 <!ENTITY zotero.errorReport.submitted "Отчета с грешките беше подаден.">
 <!ENTITY zotero.errorReport.reportID "Идентификационен номер на отчета:">
@@ -43,7 +50,7 @@
 <!ENTITY zotero.collections.showUnfiledItems "Show Unfiled Items">
 
 <!ENTITY zotero.items.itemType "Вид запис">
-<!ENTITY zotero.items.type_column "Вид">
+<!ENTITY zotero.items.type_column "Item Type">
 <!ENTITY zotero.items.title_column "Заглавие">
 <!ENTITY zotero.items.creator_column "Създател">
 <!ENTITY zotero.items.date_column "Дата">
@@ -96,7 +103,9 @@
 <!ENTITY zotero.toolbar.newItemFromPage.label "Създава нов запис от настоящата страница">
 <!ENTITY zotero.toolbar.lookup.label "Добавя запис чрез идентификатор">
 <!ENTITY zotero.toolbar.removeItem.label "Остранява запис...">
+<!ENTITY zotero.toolbar.newLibrary.label "New Library…">
 <!ENTITY zotero.toolbar.newCollection.label "Нова колекция...">
+<!ENTITY zotero.toolbar.markFeedRead.label "Mark Feed as Read">
 <!ENTITY zotero.toolbar.newGroup "Нова група...">
 <!ENTITY zotero.toolbar.newSubcollection.label "Нова подколекция...">
 <!ENTITY zotero.toolbar.newSavedSearch.label "Ново запазено търсене...">
@@ -116,12 +125,22 @@
 <!ENTITY zotero.toolbar.openURL.label "Открива">
 <!ENTITY zotero.toolbar.openURL.tooltip "Открива чрез вашата локална библиотека">
 
+<!ENTITY zotero.toolbar.feeds.new "New Feed…">
+<!ENTITY zotero.toolbar.feeds.new.fromURL "From URL…">
+<!ENTITY zotero.toolbar.feeds.new.fromPage "From Page…">
+<!ENTITY zotero.toolbar.feeds.new.fromOPML "From OPML…">
+<!ENTITY zotero.toolbar.feeds.refresh "Refresh Feed">
+<!ENTITY zotero.toolbar.feeds.edit "Edit Feed…">
+
 <!ENTITY zotero.item.add "Добавя">
 <!ENTITY zotero.item.attachment.file.show "Показва Файл">
 <!ENTITY zotero.item.textTransform "Преобразува текст">
 <!ENTITY zotero.item.textTransform.titlecase "Заглавни букви">
 <!ENTITY zotero.item.textTransform.sentencecase "Sentence case">
-<!ENTITY zotero.item.creatorTransform.nameSwap "Swap first/last names">
+<!ENTITY zotero.item.creatorTransform.nameSwap "Swap First/Last Names">
+<!ENTITY zotero.item.viewOnline "View Online">
+<!ENTITY zotero.item.copyAsURL "Copy as URL">
+<!ENTITY zotero.item.deletePermanently "Delete Permanently…">
 
 <!ENTITY zotero.toolbar.newNote "New Note">
 <!ENTITY zotero.toolbar.note.standalone "Нова самостоятелна бележка">
@@ -133,11 +152,9 @@
 <!ENTITY zotero.toolbar.attachment.snapshot "Снимка на настоящата страница">
 
 <!ENTITY zotero.tagSelector.noTagsToDisplay "Няма отметки, които да бъдат показани">
-<!ENTITY zotero.tagSelector.filter "Филтър:">
+<!ENTITY zotero.tagSelector.loadingTags "Loading tags…">
 <!ENTITY zotero.tagSelector.showAutomatic "Показва автоматично">
 <!ENTITY zotero.tagSelector.displayAllInLibrary "Показва всички отметки в тази библиотека">
-<!ENTITY zotero.tagSelector.selectVisible "Избор на видимите">
-<!ENTITY zotero.tagSelector.clearVisible "Отказ на видимите">
 <!ENTITY zotero.tagSelector.clearAll "Отказ на всички">
 <!ENTITY zotero.tagSelector.assignColor "Assign Color…">
 <!ENTITY zotero.tagSelector.renameTag "Преименува отметката...">
@@ -159,6 +176,8 @@
 
 <!ENTITY zotero.bibliography.title "Създава библиография">
 <!ENTITY zotero.bibliography.style.label "Стил на цитиране:">
+<!ENTITY zotero.bibliography.manageStyles "Manage Styles…">
+<!ENTITY zotero.bibliography.locale.label "Language:">
 <!ENTITY zotero.bibliography.outputMode "Output Mode:">
 <!ENTITY zotero.bibliography.bibliography "Bibliography">
 <!ENTITY zotero.bibliography.outputMethod "Output Method:">
@@ -183,9 +202,6 @@
 
 <!ENTITY zotero.citation.keepSorted.label "Запазва подредбата на източниците">
 
-<!ENTITY zotero.citation.page "Страница">
-<!ENTITY zotero.citation.paragraph "Параграф">
-<!ENTITY zotero.citation.line "Ред">
 <!ENTITY zotero.citation.suppressAuthor.label "Скрива автора">
 <!ENTITY zotero.citation.prefix.label "Представка:">
 <!ENTITY zotero.citation.suffix.label "Надставка:">
@@ -223,7 +239,6 @@
 
 <!ENTITY zotero.integration.references.label "Препратки в библиографията">
 
-<!ENTITY zotero.sync.button "Синхронизира със сървъра на Зотеро">
 <!ENTITY zotero.sync.error "Грешка в синхронизирането">
 <!ENTITY zotero.sync.storage.progress "Прогрес:">
 <!ENTITY zotero.sync.storage.downloads "Изтегля:">
@@ -249,11 +264,20 @@
 <!ENTITY zotero.proxy.recognized.disable.label "Поискванията не се пренасочват автоматично през вече разпознатите проксита">
 <!ENTITY zotero.proxy.recognized.ignore.label "Ингнорира">
 
+<!ENTITY zotero.feedSettings.title "Feed Settings">
+<!ENTITY zotero.feedSettings.saveButton.label "Save">
+<!ENTITY zotero.feedSettings.url.label "URL:">
+<!ENTITY zotero.feedSettings.title.label "Title:">
+<!ENTITY zotero.feedSettings.refresh.label1 "Update feed every">
+<!ENTITY zotero.feedSettings.refresh.label2 "hour(s)">
+<!ENTITY zotero.feedSettings.cleanupAfter.label1 "Remove read articles after ">
+<!ENTITY zotero.feedSettings.cleanupAfter.label2 "day(s)">
+
+
 <!ENTITY zotero.recognizePDF.recognizing.label "Извлича на метаданите...">
 <!ENTITY zotero.recognizePDF.cancel.label "Отказ">
 <!ENTITY zotero.recognizePDF.pdfName.label "Име на PDF">
 <!ENTITY zotero.recognizePDF.itemName.label "Име на запис">
-<!ENTITY zotero.recognizePDF.captcha.label "Въведете текста по-долу за да продължи извличането на метадани.">
 
 <!ENTITY zotero.rtfScan.title "Преглед на RTF">
 <!ENTITY zotero.rtfScan.cancel.label "Отказ">
@@ -283,3 +307,7 @@
 <!ENTITY zotero.downloadManager.label "Save to Zotero">
 <!ENTITY zotero.downloadManager.saveToLibrary.description "Attachments cannot be saved to the currently selected library. This item will be saved to your library instead.">
 <!ENTITY zotero.downloadManager.noPDFTools.description "To use this feature, you must first install the PDF tools in the Search pane of the Zotero preferences.">
+
+<!ENTITY zotero.attachLink.title "Attach Link to URI">
+<!ENTITY zotero.attachLink.label.link "Link:">
+<!ENTITY zotero.attachLink.label.title "Title:">

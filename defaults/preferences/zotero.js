@@ -11,6 +11,7 @@ pref("extensions.zotero.baseAttachmentPath", '');
 pref("extensions.zotero.useDataDir", false);
 pref("extensions.zotero.dataDir", '');
 pref("extensions.zotero.lastDataDir", '');
+pref("extensions.zotero.warnOnUnsafeDataDir", true);
 pref("extensions.zotero.debug.log",false);
 pref("extensions.zotero.debug.stackTrace", false);
 pref("extensions.zotero.debug.store",false);
@@ -22,9 +23,10 @@ pref("extensions.zotero.debug.time", false);
 pref("extensions.zotero.automaticScraperUpdates",true);
 pref("extensions.zotero.zoteroDotOrgVersionHeader", true);
 pref("extensions.zotero.triggerProxyAuthentication", true);
+// Proxy auth URLs should respond successfully to HEAD requests over HTTP and HTTPS (in case of forced HTTPS requests)
+pref("extensions.zotero.proxyAuthenticationURLs", 'http://www.acm.org,http://www.ebscohost.com,http://www.elsevier.com,http://www.ieee.org,http://www.jstor.org,http://www.ovid.com,http://www.springer.com,http://www.tandfonline.com');
 pref("extensions.zotero.cacheTranslatorData",true);
 pref("extensions.zotero.showIn", 1);
-pref("extensions.zotero.statusBarIcon", 2);
 pref("extensions.zotero.browserContentContextMenu", true);
 pref("extensions.zotero.openURL.resolver","http://worldcatlibraries.org/registry/gateway");
 pref("extensions.zotero.openURL.version","1.0");
@@ -34,6 +36,7 @@ pref("extensions.zotero.downloadAssociatedFiles",true);
 pref("extensions.zotero.reportTranslationFailure",true);
 pref("extensions.zotero.automaticTags",true);
 pref("extensions.zotero.fontSize", "1.0");
+pref("extensions.zotero.layout", "standard");
 pref("extensions.zotero.recursiveCollections", false);
 pref("extensions.zotero.attachmentRenameFormatString", '{%c - }{%y - }{%t{50}}');
 pref("extensions.zotero.capitalizeTitles", false);
@@ -43,21 +46,28 @@ pref("extensions.zotero.sortAttachmentsChronologically", false);
 pref("extensions.zotero.showTrashWhenEmpty", true);
 pref("extensions.zotero.trashAutoEmptyDays", 30);
 pref("extensions.zotero.viewOnDoubleClick", true);
+pref("extensions.zotero.firstRunGuidance", true);
 
 pref("extensions.zotero.groups.copyChildLinks", true);
 pref("extensions.zotero.groups.copyChildFileAttachments", true);
 pref("extensions.zotero.groups.copyChildNotes", true);
 pref("extensions.zotero.groups.copyTags", true);
 
+pref("extensions.zotero.feeds.sortAscending", false);
+pref("extensions.zotero.feeds.defaultTTL", 1);
+pref("extensions.zotero.feeds.defaultCleanupAfter", 2);
+
 pref("extensions.zotero.backup.numBackups", 2);
 pref("extensions.zotero.backup.interval", 1440);
 
 pref("extensions.zotero.lastCreatorFieldMode",0);
-pref("extensions.zotero.lastAbstractExpand",0);
+pref("extensions.zotero.lastAbstractExpand", true);
 pref("extensions.zotero.lastRenameAssociatedFile", false);
-pref("extensions.zotero.lastViewedFolder", 'L');
 pref("extensions.zotero.lastLongTagMode", 0);
 pref("extensions.zotero.lastLongTagDelimiter", ";");
+
+pref("extensions.zotero.fallbackSort", 'firstCreator,date,title,dateAdded');
+pref("extensions.zotero.sortCreatorAsString", false);
 
 //Tag Cloud
 pref("extensions.zotero.tagCloud", false);
@@ -65,14 +75,18 @@ pref("extensions.zotero.tagCloud", false);
 // Keyboard shortcuts
 pref("extensions.zotero.keys.openZotero", 'Z');
 pref("extensions.zotero.keys.toggleFullscreen", 'F');
-pref("extensions.zotero.keys.library", 'L');
-pref("extensions.zotero.keys.quicksearch", 'K');
+pref("extensions.zotero.keys.saveToZotero", 'S');
 pref("extensions.zotero.keys.newItem", 'N');
 pref("extensions.zotero.keys.newNote", 'O');
-pref("extensions.zotero.keys.toggleTagSelector", 'T');
+pref("extensions.zotero.keys.importFromClipboard", 'V');
+pref("extensions.zotero.keys.library", 'L');
+pref("extensions.zotero.keys.quicksearch", 'K');
 pref("extensions.zotero.keys.copySelectedItemCitationsToClipboard", 'A');
 pref("extensions.zotero.keys.copySelectedItemsToClipboard", 'C');
-pref("extensions.zotero.keys.importFromClipboard", 'V');
+pref("extensions.zotero.keys.toggleTagSelector", 'T');
+pref("extensions.zotero.keys.sync", 'Y');
+pref("extensions.zotero.keys.toggleAllRead", 'R');
+pref("extensions.zotero.keys.toggleRead", '`');
 
 // Fulltext indexing
 pref("extensions.zotero.fulltext.textMaxLength", 500000);
@@ -93,7 +107,6 @@ pref("extensions.zotero.export.lastTranslator", '14763d24-8ba0-45df-8f52-b8d1108
 pref("extensions.zotero.export.translatorSettings", 'true,false');
 pref("extensions.zotero.export.lastStyle", 'http://www.zotero.org/styles/chicago-note-bibliography');
 pref("extensions.zotero.export.bibliographySettings", 'save-as-rtf');
-pref("extensions.zotero.export.bibliographyLocale", '');
 pref("extensions.zotero.export.displayCharsetOption", false);
 pref("extensions.zotero.export.citePaperJournalArticleURL", false);
 pref("extensions.zotero.cite.automaticJournalAbbreviations", true);
@@ -141,12 +154,14 @@ pref("extensions.zotero.sync.storage.deleteDelayDays", 30);
 pref("extensions.zotero.sync.storage.groups.enabled", true);
 pref("extensions.zotero.sync.storage.downloadMode.personal", "on-sync");
 pref("extensions.zotero.sync.storage.downloadMode.groups", "on-sync");
+pref("extensions.zotero.sync.fulltext.enabled", true);
 
 // Proxy
 pref("extensions.zotero.proxies.autoRecognize", true);
 pref("extensions.zotero.proxies.transparent", true);
 pref("extensions.zotero.proxies.disableByDomain", false);
 pref("extensions.zotero.proxies.disableByDomainString", ".edu");
+pref("extensions.zotero.proxies.showRedirectNotification", true);
 
 // Data layer purging
 pref("extensions.zotero.purge.creators", false);
@@ -171,5 +186,5 @@ pref("extensions.zotero.fallbackLauncher.windows", "");
 //Translators
 pref("extensions.zotero.translators.attachSupplementary", false);
 pref("extensions.zotero.translators.supplementaryAsLink", false);
-pref("extensions.zotero.translators.RIS.import.ignoreUnknown", false);
+pref("extensions.zotero.translators.RIS.import.ignoreUnknown", true);
 pref("extensions.zotero.translators.RIS.import.keepID", false);

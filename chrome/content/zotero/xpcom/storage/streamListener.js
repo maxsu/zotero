@@ -30,10 +30,9 @@
  * Possible properties of data object:
  *   - onStart: f(request)
  *   - onProgress:  f(request, progress, progressMax)
- *   - onStop:  f(request, status, response, data)
- *   - onCancel:  f(request, status, data)
+ *   - onStop:  f(request, status, response)
+ *   - onCancel:  f(request, status)
  *   - streams: array of streams to close on completion
- *   - Other values to pass to onStop()
  */
 Zotero.Sync.Storage.StreamListener = function (data) {
 	this._data = data;
@@ -44,17 +43,12 @@ Zotero.Sync.Storage.StreamListener.prototype = {
 	
 	// nsIProgressEventSink
 	onProgress: function (request, context, progress, progressMax) {
-		// Workaround for https://bugzilla.mozilla.org/show_bug.cgi?id=451991
-		// (fixed in Fx3.1)
-		if (progress > progressMax) {
-			progress = progressMax;
-		}
-		//Zotero.debug("onProgress with " + progress + "/" + progressMax);
+		Zotero.debug("onProgress with " + progress + "/" + progressMax);
 		this._onProgress(request, progress, progressMax);
 	},
 	
 	onStatus: function (request, context, status, statusArg) {
-		//Zotero.debug('onStatus');
+		Zotero.debug('onStatus with ' + status);
 	},
 	
 	// nsIRequestObserver
@@ -67,49 +61,75 @@ Zotero.Sync.Storage.StreamListener.prototype = {
 	},
 	
 	onStopRequest: function (request, context, status) {
-		Zotero.debug('onStopRequest');
+		Zotero.debug('onStopRequest with ' + status);
 		
+		// Some errors from https://developer.mozilla.org/en-US/docs/Table_Of_Errors
+		var msg = "";
 		switch (status) {
-			case 0:
-			case 0x804b0002: // NS_BINDING_ABORTED
-				this._onStop(request, status);
-				break;
-			
-			default:
-				throw ("Unexpected request status " + status
-					+ " in Zotero.Sync.Storage.StreamListener.onStopRequest()");
+		// Normal
+		case 0:
+			break;
+		
+		// NS_BINDING_ABORTED
+		case 0x804b0002:
+			msg = "Request cancelled";
+			break;
+		
+		// NS_ERROR_NET_INTERRUPT
+		case 0x804B0047:
+			msg = "Request interrupted";
+			break;
+		
+		// NS_ERROR_NET_TIMEOUT
+		case 0x804B000E:
+			msg = "Request timed out";
+			break;
+		
+		default:
+			msg = "Request failed";
+			break;
 		}
+		
+		if (msg) {
+			msg += " in Zotero.Sync.Storage.StreamListener.onStopRequest() (" + status + ")";
+			Components.utils.reportError(msg);
+			Zotero.debug(msg, 1);
+		}
+		
+		this._onStop(request, status);
 	},
 	
 	// nsIWebProgressListener
 	onProgressChange: function (wp, request, curSelfProgress,
 			maxSelfProgress, curTotalProgress, maxTotalProgress) {
-		//Zotero.debug("onProgressChange with " + curTotalProgress + "/" + maxTotalProgress);
+		Zotero.debug("onProgressChange with " + curTotalProgress + "/" + maxTotalProgress);
 		
 		// onProgress gets called too, so this isn't necessary
 		//this._onProgress(request, curTotalProgress, maxTotalProgress);
 	},
 	
 	onStateChange: function (wp, request, stateFlags, status) {
-		Zotero.debug("onStateChange");
-		Zotero.debug(stateFlags);
-		Zotero.debug(status);
+		Zotero.debug("onStateChange with " + stateFlags);
 		
-		if ((stateFlags & Components.interfaces.nsIWebProgressListener.STATE_START)
-				&& (stateFlags & Components.interfaces.nsIWebProgressListener.STATE_IS_NETWORK)) {
-			this._onStart(request);
-		}
-		else if ((stateFlags & Components.interfaces.nsIWebProgressListener.STATE_STOP)
-				&& (stateFlags & Components.interfaces.nsIWebProgressListener.STATE_IS_NETWORK)) {
-			this._onStop(request, status);
+		if (stateFlags & Components.interfaces.nsIWebProgressListener.STATE_IS_REQUEST) {
+			if (stateFlags & Components.interfaces.nsIWebProgressListener.STATE_START) {
+				this._onStart(request);
+			}
+			else if (stateFlags & Components.interfaces.nsIWebProgressListener.STATE_STOP) {
+				this._onStop(request, status);
+			}
 		}
 	},
 	
 	onStatusChange: function (progress, request, status, message) {
 		Zotero.debug("onStatusChange with '" + message + "'");
 	},
-	onLocationChange: function () {},
-	onSecurityChange: function () {},
+	onLocationChange: function () {
+		Zotero.debug('onLocationChange');
+	},
+	onSecurityChange: function () {
+		Zotero.debug('onSecurityChange');
+	},
 	
 	// nsIStreamListener
 	onDataAvailable: function (request, context, stream, sourceOffset, length) {
@@ -119,27 +139,54 @@ Zotero.Sync.Storage.StreamListener.prototype = {
 				.createInstance(Components.interfaces.nsIScriptableInputStream);
 		scriptableInputStream.init(stream);
 		
-		this._response += scriptableInputStream.read(length);
+		var data = scriptableInputStream.read(length);
+		Zotero.debug(data);
+		this._response += data;
 	},
 	
 	// nsIChannelEventSink
-	onChannelRedirect: function (oldChannel, newChannel, flags) {
+	//
+	// If this._data.onChannelRedirect exists, it should return a promise resolving to true to
+	// follow the redirect or false to cancel it
+	onChannelRedirect: Zotero.Promise.coroutine(function* (oldChannel, newChannel, flags) {
 		Zotero.debug('onChannelRedirect');
+		
+		if (this._data && this._data.onChannelRedirect) {
+			let result = yield this._data.onChannelRedirect(oldChannel, newChannel, flags);
+			if (!result) {
+				oldChannel.cancel(Components.results.NS_BINDING_ABORTED);
+				newChannel.cancel(Components.results.NS_BINDING_ABORTED);
+				Zotero.debug("Cancelling redirect");
+				// TODO: Prevent onStateChange error
+				return false;
+			}
+		}
 		
 		// if redirecting, store the new channel
 		this._channel = newChannel;
-	},
+	}),
 	
 	asyncOnChannelRedirect: function (oldChan, newChan, flags, redirectCallback) {
 		Zotero.debug('asyncOnRedirect');
 		
-		this.onChannelRedirect(oldChan, newChan, flags);
-		redirectCallback.onRedirectVerifyCallback(0);
+		this.onChannelRedirect(oldChan, newChan, flags)
+		.then(function (result) {
+			redirectCallback.onRedirectVerifyCallback(
+				result ? Components.results.NS_SUCCEEDED : Components.results.NS_FAILED
+			);
+		})
+		.catch(function (e) {
+			Zotero.logError(e);
+			redirectCallback.onRedirectVerifyCallback(Components.results.NS_FAILED);
+		});
 	},
 	
 	// nsIHttpEventSink
 	onRedirect: function (oldChannel, newChannel) {
 		Zotero.debug('onRedirect');
+		
+		var newURL = Zotero.HTTP.getDisplayURI(newChannel.URI).spec;
+		Zotero.debug("Redirecting to " + newURL);
 	},
 	
 	
@@ -149,8 +196,7 @@ Zotero.Sync.Storage.StreamListener.prototype = {
 	_onStart: function (request) {
 		Zotero.debug('Starting request');
 		if (this._data && this._data.onStart) {
-			var data = this._getPassData();
-			this._data.onStart(request, data);
+			this._data.onStart(request);
 		}
 	},
 	
@@ -161,51 +207,43 @@ Zotero.Sync.Storage.StreamListener.prototype = {
 	},
 	
 	_onStop: function (request, status) {
-		Zotero.debug('Request ended with status ' + status);
 		var cancelled = status == 0x804b0002; // NS_BINDING_ABORTED
 		
-		if (!cancelled && request instanceof Components.interfaces.nsIHttpChannel) {
+		if (!cancelled && status == 0 && request instanceof Components.interfaces.nsIHttpChannel) {
 			request.QueryInterface(Components.interfaces.nsIHttpChannel);
-			status = request.responseStatus;
+			try {
+				status = request.responseStatus;
+			}
+			catch (e) {
+				Zotero.debug("Request responseStatus not available", 1);
+				status = 0;
+			}
+			Zotero.debug('Request ended with status code ' + status);
 			request.QueryInterface(Components.interfaces.nsIRequest);
+		}
+		else {
+			Zotero.debug('Request ended with status ' + status);
+			status = 0;
 		}
 		
 		if (this._data.streams) {
-			for each(var stream in this._data.streams) {
+			for (let stream of this._data.streams) {
 				stream.close();
 			}
 		}
 		
-		var data = this._getPassData();
-		
 		if (cancelled) {
 			if (this._data.onCancel) {
-				this._data.onCancel(request, status, data);
+				this._data.onCancel(request, status);
 			}
 		}
 		else {
 			if (this._data.onStop) {
-				this._data.onStop(request, status, this._response, data);
+				this._data.onStop(request, status, this._response);
 			}
 		}
 		
 		this._channel = null;
-	},
-	
-	_getPassData: function () {
-		// Make copy of data without callbacks to pass along
-		var passData = {};
-		for (var i in this._data) {
-			switch (i) {
-				case "onStart":
-				case "onProgress":
-				case "onStop":
-				case "onCancel":
-					continue;
-			}
-			passData[i] = this._data[i];
-		}
-		return passData;
 	},
 	
 	// nsIInterfaceRequestor

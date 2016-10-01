@@ -84,10 +84,10 @@ Zotero.Connector_Types = new function() {
 					return ZOTERO_CONFIG.BOOKMARKLET_URL+"images/"+icon;
 				} else if(Zotero.isFx) {
 					return "chrome://zotero/skin/"+icon;
-				} else if(Zotero.isChrome) {
+				} else if(Zotero.isBrowserExt) {
 					return chrome.extension.getURL("images/"+icon);
 				} else if(Zotero.isSafari) {
-					return safari.extension.baseURI+"images/itemTypes/"+icon;
+					return safari.extension.baseURI+"images/"+icon;
 				}
 			};
 		}
@@ -100,9 +100,14 @@ Zotero.Connector_Types = new function() {
 				var itemType = itemTypes[idOrName];
 				if(!itemType) return false;
 				
-				var itemCreatorTypes = itemType[3]/* creatorTypes */,
-					n = itemCreatorTypes.length,
-					outputTypes = new Array(n);
+				var itemCreatorTypes = itemType[3]; // creatorTypes
+				if (!itemCreatorTypes
+						// TEMP: 'note' and 'attachment' have an array containing false
+						|| (itemCreatorTypes.length == 1 && !itemCreatorTypes[0])) {
+					return [];
+				}
+				var n = itemCreatorTypes.length;
+				var outputTypes = new Array(n);
 				
 				for(var i=0; i<n; i++) {
 					var creatorType = creatorTypes[itemCreatorTypes[i]];
@@ -115,7 +120,7 @@ Zotero.Connector_Types = new function() {
 			this.getPrimaryIDForType = function(idOrName) {
 				var itemType = itemTypes[idOrName];
 				if(!itemType) return false;
-				return itemTypes[3]/* creatorTypes */[0];
+				return itemType[3]/* creatorTypes */[0];
 			};
 		}
 		

@@ -24,7 +24,7 @@
 */
 
 Zotero.IPC = new function() {
-	var _libc, _libcPath, _instancePipe, _user32, open, write, close, instancePipeOpen;
+	var _libc, _libcPath, _instancePipe, _user32, open, write, close;
 	
 	/**
 	 * Initialize pipe for communication with connector
@@ -45,7 +45,7 @@ Zotero.IPC = new function() {
 	 * Parses input received via instance pipe
 	 */
 	this.parsePipeInput = function(msgs) {
-		for each(var msg in msgs.split("\n")) {
+		for (let msg of msgs.split("\n")) {
 			if(!msg) continue;
 			Zotero.debug('IPC: Received "'+msg+'"');
 			
@@ -62,10 +62,13 @@ Zotero.IPC = new function() {
 			 *    has been received if it is already initialized, SA sends an initComplete message 
 			 *    to Z4Fx.
 			 */
-			if(msg === "releaseLock" && !Zotero.isConnector) {
+			if(msg.substr(0, 11) === "releaseLock") {
 				// Standalone sends this to the Firefox extension to tell the Firefox extension to
 				// release its lock on the Zotero database
-				switchConnectorMode(true);
+				if(!Zotero.isConnector && (msg.length === 11 ||
+					                       msg.substr(12) === Zotero.getZoteroDatabase().persistentDescriptor)) {
+					switchConnectorMode(true);
+				}
 			} else if(msg === "lockReleased") {
 				// The Firefox extension sends this to Standalone to let Standalone know that it has
 				// released its lock
@@ -178,10 +181,17 @@ Zotero.IPC = new function() {
 					{"lpData":ctypes.voidptr_t}
 			]);
 			
-			const appNames = ["Firefox", "Zotero", "Nightly", "Aurora", "Minefield"];
-			for each(var appName in appNames) {
+			// Aurora/Nightly are always named "Firefox" in
+			// application.ini
+			const appNames = ["Firefox", "Zotero"];
+			
+			// Different from Zotero.appName; this corresponds to the
+			// name in application.ini
+			const myAppName = Services.appinfo.name;
+
+			for (let appName of appNames) {
 				// don't send messages to ourself
-				if(appName === Zotero.appName) continue;
+				if(appName === myAppName) continue;
 				
 				var thWnd = FindWindow(appName+"MessageWindow", null);
 				if(thWnd) {
@@ -223,7 +233,7 @@ Zotero.IPC = new function() {
 			
 			if(!pipes.length) return false;
 			var success = false;
-			for each(var pipe in pipes) {
+			for (let pipe of pipes) {
 				Zotero.debug('IPC: Trying to broadcast "'+msg+'" to instance '+pipe.leafName);
 				
 				var defunct = false;
@@ -243,18 +253,12 @@ Zotero.IPC = new function() {
 				}
 				
 				if(!defunct) {
-					// make sure instance pipe is open and accepting input, so that we can receive
-					// a response to whatever we're sending
-					if(!instancePipeOpen && _instancePipe.exists()) {
-						Zotero.IPC.safePipeWrite(_instancePipe, "test\n", true);
-						instancePipeOpen = true;
-					}
-					
-					// Try to write to the pipe once a ms for 100 ms
-					var timeout = Date.now()+100, wroteToPipe;
+					// Try to write to the pipe for 100 ms
+					var time = Date.now(), timeout = time+100, wroteToPipe;
 					do {
 						wroteToPipe = Zotero.IPC.safePipeWrite(pipe, msg+"\n");
 					} while(Date.now() < timeout && !wroteToPipe);
+					if (wroteToPipe) Zotero.debug('IPC: Pipe took '+(Date.now()-time)+' ms to become available');
 					success = success || wroteToPipe;
 					defunct = !wroteToPipe;
 				}

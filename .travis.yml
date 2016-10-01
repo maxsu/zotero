@@ -1,0 +1,30 @@
+sudo: false
+language: cpp
+compiler:
+    - gcc
+env:
+    - FX_CHANNEL="release"
+    - FX_CHANNEL="esr"
+    - FX_CHANNEL="beta"
+matrix:
+    fast_finish: true
+    allow_failures:
+        - env: FX_CHANNEL="beta"
+notifications:
+    email: false
+install:
+    # Use unbranded builds for 'release' and 'beta'
+    - if [ $FX_CHANNEL != "esr" ]; then
+        URL="`curl -s https://wiki.mozilla.org/Addons/Extension_Signing | sed -n -r \"s/.+https?(:\/\/archive.mozilla.org[^ ]+\/mozilla-${FX_CHANNEL}-linux64-add-on-devel\/[0-9]+\/.+.bz2).+/https\1/p\"`";
+        wget -O tarball "$URL";
+      fi
+    # Use official build for 'esr'
+    - if [ $FX_CHANNEL == "esr" ]; then
+        wget -O tarball "https://download.mozilla.org/?product=firefox-${FX_CHANNEL}-latest&os=linux64&lang=en-US";
+      fi
+    - tar xf tarball
+before_script:
+    - export DISPLAY=:99.0
+    - sh -e /etc/init.d/xvfb start
+script:
+    - test/runtests.sh -x firefox/firefox

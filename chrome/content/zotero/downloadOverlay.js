@@ -49,7 +49,7 @@ var Zotero_DownloadOverlay = new function() {
 	 *
 	 * @return {Boolean} True if an item was saved, false if we were not supposed to save
 	 */
-	this.handleSave = function() {
+	this.handleSave = Zotero.Promise.coroutine(function* () {
 		if(!document.getElementById('zotero-radio').selected) return false;
 		
 		var retrieveMetadata = document.getElementById('zotero-recognizePDF').selected;
@@ -63,43 +63,28 @@ var Zotero_DownloadOverlay = new function() {
 						.getMostRecentWindow("navigator:browser");
 		var libraryID, collection;
 		try {
-			if(win.ZoteroPane.getItemGroup().filesEditable) {
+			let itemGroup = win.ZoteroPane.getCollectionTreeRow();
+			if (itemGroup.filesEditable && !itemGroup.isPublications()) {
 				libraryID = win.ZoteroPane.getSelectedLibraryID();
 				collection = win.ZoteroPane.getSelectedCollection();
 			}
-		} catch(e) {};
+			// TODO: Just show an error instead?
+			else {
+				Zotero.debug("Cannot save files to library " + itemGroup.ref.libraryID
+					+ " -- saving to My Library instead", 2);
+				libraryID = Zotero.Libraries.userLibraryID;
+			}
+		} catch(e) {
+			Zotero.debug(e, 1);
+		};
 		
 		var recognizePDF = document.getElementById('zotero-recognizePDF').checked
 				&& !document.getElementById('zotero-recognizePDF').hidden
 				&& !document.getElementById('zotero-recognizePDF').disabled;
+		var contentType = dialog.mLauncher.MIMEInfo.MIMEType;
 		
-		// set up callback
-		var callback = function(item) {
-			if(!win) return;
-						
-			if(item) {
-				progressWin.addLines([item.getDisplayTitle()], [item.getImageSrc()]);
-				progressWin.startCloseTimer();
-				if(collection) collection.addItem(item.id);
-			} else {
-				progressWin.addDescription(Zotero.getString("save.link.error"));
-				progressWin.startCloseTimer(8000);
-			}
-			
-			if(recognizePDF) {
-				var timer = Components.classes["@mozilla.org/timer;1"]
-					.createInstance(Components.interfaces.nsITimer);
-				timer.init(function() {
-					try {
-					if(item.getFile()) {
-						timer.cancel();
-						var recognizer = new win.Zotero_RecognizePDF.ItemRecognizer();
-						recognizer.recognizeItems([item]);
-					}
-					} catch(e) { dump(e.toSource()) };
-				}, 1000, Components.interfaces.nsITimer.TYPE_REPEATING_SLACK);
-			}
-		};
+		// mimic dialog cancellation
+		dialog.onCancel();
 		
 		// show progress dialog
 		var progressWin = new Zotero.ProgressWindow();
@@ -107,15 +92,48 @@ var Zotero_DownloadOverlay = new function() {
 		progressWin.show();
 		
 		// perform import
-		Zotero.Attachments.importFromURL(url, false, false, false,
-			collection ? [collection.id] : [], dialog.mLauncher.MIMEInfo.MIMEType,
-			libraryID, callback);
+		try {
+			var item = yield Zotero.Attachments.importFromURL({
+				libraryID,
+				url,
+				collections: collection ? [collection.id] : [],
+				contentType
+			});
+		}
+		catch (e) {
+			if (!win) return;
+			progressWin.addDescription(Zotero.getString("save.link.error"));
+			progressWin.startCloseTimer(8000);
+			Zotero.logError(e);
+			return false;
+		}
 		
-		// mimic dialog cancellation
-		dialog.onCancel();
+		if(!win) return;
+		
+		progressWin.addLines([item.getDisplayTitle()], [item.getImageSrc()]);
+		progressWin.startCloseTimer();
+		if (collection) {
+			yield collection.addItem(item.id);
+		}
+		
+		yield win.ZoteroPane.selectItem(item.id);
+		
+		if(recognizePDF) {
+			var timer = Components.classes["@mozilla.org/timer;1"]
+				.createInstance(Components.interfaces.nsITimer);
+			timer.init(function() {
+				try {
+				if (item && item.getFile()) {
+					timer.cancel();
+					var recognizer = new win.Zotero_RecognizePDF.ItemRecognizer();
+					recognizer.recognizeItems([item]);
+				}
+				} catch(e) { dump(e.toSource()) };
+			}, 1000, Components.interfaces.nsITimer.TYPE_REPEATING_SLACK);
+		}
 		
 		return true;
-	};
+	});
 	
 	/**
 	 * Called when mode in dialog has been changed
@@ -147,7 +165,7 @@ var Zotero_DownloadOverlay = new function() {
 		var zoteroSelected = document.getElementById('zotero-radio').selected;
 		var zp = Zotero.getActiveZoteroPane(), canSave = true;
 		try {
-			canSave = zp.getItemGroup().filesEditable;
+			canSave = zp.getCollectionTreeRow().filesEditable;
 		} catch(e) {
 			Zotero.logError(e);
 		};
@@ -164,7 +182,7 @@ var Zotero_DownloadOverlay = new function() {
 		// Disable for filetypes people probably don't want to save
 		var show = false;
 		var mimeType = dialog.mLauncher.MIMEInfo.MIMEType.toLowerCase();
-		for each(var elem in ALLOW_LIST) {
+		for (let elem of ALLOW_LIST) {
 			if(typeof elem === "string") {
 				if(elem === mimeType) {
 					document.getElementById('zotero-container').hidden = false;
@@ -180,9 +198,9 @@ var Zotero_DownloadOverlay = new function() {
 		
 		// Hook in event listener to ondialogaccept
 		document.documentElement.setAttribute('ondialogaccept',
-			'if(!Zotero_DownloadOverlay.handleSave()) { '
+			'Zotero_DownloadOverlay.handleSave().then(function (saved) { if (!saved) {'
 			+ document.documentElement.getAttribute('ondialogaccept')
-			+'}');
+			+'}})');
 		
 		// Hook in event listener for mode change
 		var radios = document.getElementById('mode').

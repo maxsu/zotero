@@ -115,7 +115,7 @@ var Zotero_Citation_Dialog = new function () {
 		var i = 0;
 		for(var value in locators) {
 			var locator = locators[value];
-			var locatorLabel = locator[0].toUpperCase()+locator.substr(1);
+			var locatorLabel = Zotero.getString('citation.locator.'+locator.replace(/\s/g,''));
 			// add to list of labels
 			var child = document.createElement("menuitem");
 			child.setAttribute("value", value);
@@ -141,9 +141,9 @@ var Zotero_Citation_Dialog = new function () {
 				
 				// If we're in a different library, switch libraries
 				var id = io.citation.citationItems[0].id;
-				var itemGroup = collectionsView._getItemAtRow(collectionsView.selection.currentIndex);
+				var collectionTreeRow = collectionsView.selectedTreeRow;
 				var item = Zotero.Items.get(id);
-				if(item.libraryID != itemGroup.ref.libraryID) {
+				if(item.libraryID != collectionTreeRow.ref.libraryID) {
 					collectionsView.selectLibrary(item.libraryID);
 				}
 				var selected = itemsView.selectItem(id);
@@ -664,7 +664,9 @@ var Zotero_Citation_Dialog = new function () {
 				_multipleSourceButton.disabled = false;
 			}
 		} else {
-			_acceptButton.disabled = !itemsView.getSelectedItems().length; // treeview from xpcom/itemTreeView.js
+			collectionsView.addEventListener('load', () => {
+				_acceptButton.disabled = !itemsView.getSelectedItems().length;
+			});
 		}
 	}
 	

@@ -73,7 +73,7 @@ grid row hbox:first-child
 }
 
 
-#showIn radio, #statusBarIcon radio
+#showIn radio
 {
 	width: 120px;
 }
@@ -81,11 +81,6 @@ grid row hbox:first-child
 #fontSize radio
 {
 	margin-right: 20px;
-}
-
-#statusBarIcon radio .radio-icon
-{
-	margin-left: 6px;
 }
 
 
@@ -121,6 +116,34 @@ grid row hbox:first-child
 {
 	margin-left: 0;
 	margin-right: 10px;
+}
+
+#zotero-prefpane-sync #sync-auth-button {
+	margin-left: 0;
+}
+
+#zotero-prefpane-sync #sync-status-indicator
+{
+	width: 1.5em;
+	height: 1.7em;
+	margin-top: 0.4em;
+	background-repeat: no-repeat;
+	background-position: center;
+}
+
+#zotero-prefpane-sync #sync-status-indicator[verified=true]
+{
+	background-image: url("chrome://zotero/skin/tick.png")
+}
+
+#zotero-prefpane-sync #sync-status-indicator[verified=false]
+{
+	background-image: url("chrome://zotero/skin/cross.png")
+}
+
+#zotero-prefpane-sync #sync-status-indicator[animated]
+{
+	background-image: url("chrome://zotero/skin/arrow_rotate_animated.png")
 }
 
 .storage-settings-download-options
@@ -241,25 +264,20 @@ grid row hbox:first-child
 	height: 250px;
 }
 
+#styleManager-updated
+{
+	width: 105px;
+}
+
 /* Shortcut Keys pane */
-#zotero-prefpane-keys row
+#zotero-prefpane-advanced-keys-tab row
 {
 	-moz-box-align: center;
 }
 
-#styleManager-csl
-{
-	width: 36px;
-}
-
-#zotero-prefpane-keys textbox
+#zotero-prefpane-advanced-keys-tab textbox
 {
 	margin-left: -1px;
-}
-
-#zotero-prefpane-keys checkbox
-{
-	margin: .75em 0;
 }
 
 treechildren::-moz-tree-checkbox {

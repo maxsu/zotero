@@ -29,6 +29,7 @@
 <?xml-stylesheet href="chrome://browser/skin/preferences/preferences.css"?>
 <?xml-stylesheet href="chrome://zotero/skin/preferences.css"?>
 <?xml-stylesheet href="chrome://zotero/skin/zotero.css"?>
+<?xml-stylesheet href="chrome://zotero-platform/content/overlay.css"?>
 
 <!--
 	To add an observer for a preference change, add an appropriate case in
@@ -66,11 +67,6 @@
 			label="&zotero.preferences.prefpane.cite;"
 			image="chrome://zotero/skin/prefs-styles.png"
 			src="chrome://zotero/content/preferences/preferences_cite.xul"/>
-	
-	<prefpane id="zotero-prefpane-keys"
-			label="&zotero.preferences.prefpane.keys;"
-			image="chrome://zotero/skin/prefs-keys.png"
-			src="chrome://zotero/content/preferences/preferences_keys.xul"/>
 	
 	<prefpane id="zotero-prefpane-advanced"
 			label="&zotero.preferences.prefpane.advanced;"

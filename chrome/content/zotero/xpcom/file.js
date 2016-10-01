@@ -28,19 +28,37 @@
  * @namespace
  */
 Zotero.File = new function(){
-	Components.utils.import("resource://zotero/q.js");
 	Components.utils.import("resource://gre/modules/NetUtil.jsm");
 	Components.utils.import("resource://gre/modules/FileUtils.jsm");
 	
 	this.getExtension = getExtension;
 	this.getClosestDirectory = getClosestDirectory;
-	this.getSample = getSample;
 	this.getContentsFromURL = getContentsFromURL;
 	this.putContents = putContents;
 	this.getValidFileName = getValidFileName;
 	this.truncateFileName = truncateFileName;
 	this.getCharsetFromFile = getCharsetFromFile;
 	this.addCharsetListener = addCharsetListener;
+	
+	
+	this.pathToFile = function (pathOrFile) {
+		if (typeof pathOrFile == 'string') {
+			return new FileUtils.File(pathOrFile);
+		}
+		else if (pathOrFile instanceof Ci.nsIFile) {
+			return pathOrFile;
+		}
+		throw new Error("Unexpected value '" + pathOrFile + "'");
+	}
+	
+	
+	this.pathToFileURI = function (path) {
+		var file = new FileUtils.File(path);
+		var ios = Components.classes["@mozilla.org/network/io-service;1"]
+			.getService(Components.interfaces.nsIIOService);
+		return ios.newFileURI(file).spec;
+	}
+	
 	
 	/**
 	 * Encode special characters in file paths that might cause problems,
@@ -59,6 +77,7 @@ Zotero.File = new function(){
 	}
 	
 	function getExtension(file){
+		file = this.pathToFile(file);
 		var pos = file.leafName.lastIndexOf('.');
 		return pos==-1 ? '' : file.leafName.substr(pos+1);
 	}
@@ -82,11 +101,15 @@ Zotero.File = new function(){
 	}
 	
 	
-	/*
-	 * Get the first 128 bytes of the file as a string (multibyte-safe)
+	/**
+	 * Get the first 200 bytes of a source as a string (multibyte-safe)
+	 *
+	 * @param {nsIURI|nsIFile|string spec|nsIChannel|nsIInputStream} source - The source to read
+	 * @return {Promise}
 	 */
-	function getSample(file) {
-		return this.getContents(file, null, 128);
+	this.getSample = function (file) {
+		var bytes = 200;
+		return this.getContentsAsync(file, null, bytes);
 	}
 	
 	
@@ -108,14 +131,19 @@ Zotero.File = new function(){
 	
 	/**
 	 * Get the contents of a file or input stream
-	 * @param {nsIFile|nsIInputStream} file The file to read
+	 * @param {nsIFile|nsIInputStream|string path} file The file to read
 	 * @param {String} [charset] The character set; defaults to UTF-8
 	 * @param {Integer} [maxLength] The maximum number of bytes to read
 	 * @return {String} The contents of the file
 	 * @deprecated Use {@link Zotero.File.getContentsAsync} when possible
 	 */
-	this.getContents = function getContents(file, charset, maxLength){
+	this.getContents = function (file, charset, maxLength){
 		var fis;
+		
+		if (typeof file == 'string') {
+			file = new FileUtils.File(file);
+		}
+		
 		if(file instanceof Components.interfaces.nsIInputStream) {
 			fis = file;
 		} else if(file instanceof Components.interfaces.nsIFile) {
@@ -126,7 +154,10 @@ Zotero.File = new function(){
 			throw new Error("File is not an nsIInputStream or nsIFile");
 		}
 		
-		charset = charset ? Zotero.CharacterSets.getName(charset) : "UTF-8";
+		if (charset) {
+			charset = Zotero.CharacterSets.toLabel(charset, true)
+		}
+		charset = charset || "UTF-8";
 		
 		var blockSize = maxLength ? Math.min(maxLength, 524288) : 524288;
 		
@@ -159,46 +190,121 @@ Zotero.File = new function(){
 	
 	
 	/**
-	 * Get the contents of a file or input stream asynchronously
-	 * @param {nsIFile|nsIInputStream} file The file to read
+	 * Get the contents of a text source asynchronously
+	 *
+	 * @param {string path|nsIFile|file URI|nsIChannel|nsIInputStream} source The source to read
 	 * @param {String} [charset] The character set; defaults to UTF-8
-	 * @param {Integer} [maxLength] The maximum number of characters to read
-	 * @return {Promise} A Q promise that is resolved with the contents of the file
+	 * @param {Integer} [maxLength] Maximum length to fetch, in bytes
+	 * @return {Promise} A promise that is resolved with the contents of the file
 	 */
-	this.getContentsAsync = function getContentsAsync(file, charset, maxLength) {
-		charset = charset ? Zotero.CharacterSets.getName(charset) : "UTF-8";
-		var deferred = Q.defer(),
-			channel = NetUtil.newChannel(file, charset);
-		NetUtil.asyncFetch(channel, function(inputStream, status) {  
-			if (!Components.isSuccessCode(status)) {
-				deferred.reject(new Components.Exception("File read operation failed", status));
-				return;
+	this.getContentsAsync = Zotero.Promise.coroutine(function* (source, charset, maxLength) {
+		Zotero.debug("Getting contents of "
+			+ (source instanceof Components.interfaces.nsIFile
+				? source.path
+				: (source instanceof Components.interfaces.nsIInputStream ? "input stream" : source)));
+		
+		// Send URIs to Zotero.HTTP.request()
+		if (source instanceof Components.interfaces.nsIURI
+				|| typeof source == 'string' && !source.startsWith('file:') && source.match(/^[a-z]{3,}:/)) {
+			Zotero.logError("Passing a URI to Zotero.File.getContentsAsync() is deprecated "
+				+ "-- use Zotero.HTTP.request() instead");
+			return Zotero.HTTP.request("GET", source);
+		}
+		
+		// Use NetUtil.asyncFetch() for input streams and channels
+		if (source instanceof Components.interfaces.nsIInputStream
+				|| source instanceof Components.interfaces.nsIChannel) {
+			var deferred = Zotero.Promise.defer();
+			try {
+				NetUtil.asyncFetch(source, function(inputStream, status) {
+					if (!Components.isSuccessCode(status)) {
+						deferred.reject(new Components.Exception("File read operation failed", status));
+						return;
+					}
+					
+					try {
+						try {
+							var bytesToFetch = inputStream.available();
+						}
+						catch (e) {
+							// The stream is closed automatically when end-of-file is reached,
+							// so this throws for empty files
+							if (e.name == "NS_BASE_STREAM_CLOSED") {
+								Zotero.debug("RESOLVING2");
+								deferred.resolve("");
+							}
+							deferred.reject(e);
+						}
+						
+						if (maxLength && maxLength < bytesToFetch) {
+							bytesToFetch = maxLength;
+						}
+						
+						if (bytesToFetch == 0) {
+							deferred.resolve("");
+							return;
+						}
+						
+						deferred.resolve(NetUtil.readInputStreamToString(
+							inputStream,
+							bytesToFetch,
+							options
+						));
+					}
+					catch (e) {
+						deferred.reject(e);
+					}
+				});
 			}
-			
-			deferred.resolve(NetUtil.readInputStreamToString(inputStream, inputStream.available()));
-		});
-		return deferred.promise;
-	};
+			catch(e) {
+				// Make sure this get logged correctly
+				Zotero.logError(e);
+				throw e;
+			}
+			return deferred.promise;
+		}
+		
+		// Use OS.File for files
+		if (source instanceof Components.interfaces.nsIFile) {
+			source = source.path;
+		}
+		else if (source.startsWith('^file:')) {
+			source = OS.Path.fromFileURI(source);
+		}
+		var options = {
+			encoding: charset ? charset : "utf-8"
+		};
+		if (maxLength) {
+			options.bytes = maxLength;
+		}
+		return OS.File.read(source, options);
+	});
 	
 	
 	/**
 	 * Get the contents of a binary source asynchronously
 	 *
-	 * @param {nsIURI|nsIFile|string spec|nsIChannel|nsIInputStream} source The source to read
-	 * @return {Promise} A Q promise that is resolved with the contents of the source
+	 * This is quite slow and should only be used in tests.
+	 *
+	 * @param {string path|nsIFile|file URI} source The source to read
+	 * @param {Integer} [maxLength] Maximum length to fetch, in bytes
+	 * @return {Promise<String>} A promise for the contents of the source as a binary string
 	 */
-	this.getBinaryContentsAsync = function (source) {
-		var deferred = Q.defer();
-		NetUtil.asyncFetch(source, function(inputStream, status) {
-			if (!Components.isSuccessCode(status)) {
-				deferred.reject(new Components.Exception("Source read operation failed", status));
-				return;
-			}
-			
-			deferred.resolve(NetUtil.readInputStreamToString(inputStream, inputStream.available()));
-		});
-		return deferred.promise;
-	}
+	this.getBinaryContentsAsync = Zotero.Promise.coroutine(function* (source, maxLength) {
+		// Use OS.File for files
+		if (source instanceof Components.interfaces.nsIFile) {
+			source = source.path;
+		}
+		else if (source.startsWith('^file:')) {
+			source = OS.Path.fromFileURI(source);
+		}
+		var options = {};
+		if (maxLength) {
+			options.bytes = maxLength;
+		}
+		var buf = yield OS.File.read(source, options);
+		return [...buf].map(x => String.fromCharCode(x)).join("");
+	});
 	
 	
 	/*
@@ -213,6 +319,17 @@ Zotero.File = new function(){
 		xmlhttp.overrideMimeType("text/plain");
 		xmlhttp.send(null);
 		return xmlhttp.responseText;
+	}
+	
+	
+	/*
+	 * Return a promise for the contents of a URL as a string
+	 */
+	this.getContentsFromURLAsync = function (url) {
+		return Zotero.HTTP.request("GET", url, { responseType: "text" })
+		.then(function (xmlhttp) {
+			return xmlhttp.response;
+		});
 	}
 	
 	
@@ -238,32 +355,110 @@ Zotero.File = new function(){
 	
 	/**
 	 * Write data to a file asynchronously
-	 * @param {nsIFile} The file to write to
-	 * @param {String|nsIInputStream} data The string or nsIInputStream to write to the
-	 *     file
-	 * @param {String} [charset] The character set; defaults to UTF-8
-	 * @return {Promise} A Q promise that is resolved when the file has been written
+	 *
+	 * @param {String|nsIFile} - String path or nsIFile to write to
+	 * @param {String|nsIInputStream} data - The string or nsIInputStream to write to the file
+	 * @param {String} [charset] - The character set; defaults to UTF-8
+	 * @return {Promise} - A promise that is resolved when the file has been written
 	 */
-	this.putContentsAsync = function putContentsAsync(file, data, charset) {
-		// Create a stream for async stream copying
-		if(!(data instanceof Components.interfaces.nsIInputStream)) {
-			var converter = Components.classes["@mozilla.org/intl/scriptableunicodeconverter"].
-					createInstance(Components.interfaces.nsIScriptableUnicodeConverter);
-			converter.charset = charset ? Zotero.CharacterSets.getName(charset) : "UTF-8";
-			data = converter.convertToInputStream(data);
+	this.putContentsAsync = function (path, data, charset) {
+		if (path instanceof Ci.nsIFile) {
+			path = path.path;
 		}
 		
-		var deferred = Q.defer(),
-			ostream = FileUtils.openSafeFileOutputStream(file);
-		NetUtil.asyncCopy(data, ostream, function(inputStream, status) {  
+		if (typeof data == 'string') {
+			return Zotero.Promise.resolve(OS.File.writeAtomic(
+				path,
+				data,
+				{
+					// Note: this will fail on Windows if the temp
+					// directory is on a different drive from
+					// destination path
+					tmpPath: OS.Path.join(
+						Zotero.getTempDirectory().path,
+						OS.Path.basename(path) + ".tmp"
+					),
+					encoding: charset ? charset.toLowerCase() : 'utf-8'
+				}
+			));
+		}
+		
+		var deferred = Zotero.Promise.defer();
+		var os = FileUtils.openSafeFileOutputStream(new FileUtils.File(path));
+		NetUtil.asyncCopy(data, os, function(inputStream, status) {
 			if (!Components.isSuccessCode(status)) {
 				deferred.reject(new Components.Exception("File write operation failed", status));
 				return;
 			}
 			deferred.resolve();
 		});
-		return deferred.promise; 
+		return deferred.promise;
 	};
+	
+	
+	this.download = Zotero.Promise.coroutine(function* (uri, path) {
+		Zotero.debug("Saving " + (uri.spec ? uri.spec : uri)
+			+ " to " + (path.path ? path.path : path));			
+		
+		var deferred = Zotero.Promise.defer();
+		NetUtil.asyncFetch(uri, function (is, status, request) {
+			if (!Components.isSuccessCode(status)) {
+				Zotero.logError(status);
+				deferred.reject(new Error("Download failed with status " + status));
+				return;
+			}
+			deferred.resolve(is);
+		});
+		var is = yield deferred.promise;
+		yield Zotero.File.putContentsAsync(path, is);
+	});
+	
+	
+	/**
+	 * Delete a file if it exists, asynchronously
+	 *
+	 * @return {Promise<Boolean>} A promise for TRUE if file was deleted, FALSE if missing
+	 */
+	this.removeIfExists = function (path) {
+		return Zotero.Promise.resolve(OS.File.remove(path))
+		.return(true)
+		.catch(function (e) {
+			if (e instanceof OS.File.Error && e.becauseNoSuchFile) {
+				return false;
+			}
+			Zotero.debug(path, 1);
+			throw e;
+		});
+	}
+	
+	
+	/**
+	 * Run a generator with an OS.File.DirectoryIterator, closing the
+	 * iterator when done
+	 *
+	 * The DirectoryInterator is passed as the first parameter to the generator.
+	 *
+	 * Zotero.File.iterateDirectory(path, function* (iterator) {
+	 *    while (true) {
+	 *        var entry = yield iterator.next();
+	 *        [...]
+	 *    }
+	 * })
+	 *
+	 * @return {Promise}
+	 */
+	this.iterateDirectory = function (path, generator) {
+		var iterator = new OS.File.DirectoryIterator(path);
+		return Zotero.Promise.coroutine(generator)(iterator)
+		.catch(function (e) {
+			if (e != StopIteration) {
+				throw e;
+			}
+		})
+		.finally(function () {
+			iterator.close();
+		});
+	}
 	
 	
 	/**
@@ -286,31 +481,155 @@ Zotero.File = new function(){
 	}
 	
 	
+	this.createShortened = function (file, type, mode, maxBytes) {
+		file = this.pathToFile(file);
+		
+		if (!maxBytes) {
+			maxBytes = 255;
+		}
+		
+		// Limit should be 255, but leave room for unique numbering if necessary
+		var padding = 3;
+		
+		while (true) {
+			var newLength = maxBytes - padding;
+			
+			try {
+				file.create(type, mode);
+			}
+			catch (e) {
+				let pathError = false;
+				
+				let pathByteLength = Zotero.Utilities.Internal.byteLength(file.path);
+				let fileNameByteLength = Zotero.Utilities.Internal.byteLength(file.leafName);
+				
+				// Windows API only allows paths of 260 characters
+				//
+				// I think this should be >260 but we had a report of an error with exactly
+				// 260 chars: https://forums.zotero.org/discussion/41410
+				if (e.name == "NS_ERROR_FILE_NOT_FOUND" && pathByteLength >= 260) {
+					Zotero.debug("Path is " + file.path);
+					pathError = true;
+				}
+				// ext3/ext4/HFS+ have a filename length limit of ~254 bytes
+				else if ((e.name == "NS_ERROR_FAILURE" || e.name == "NS_ERROR_FILE_NAME_TOO_LONG")
+						&& (fileNameByteLength >= 254 || (Zotero.isLinux && fileNameByteLength > 143))) {
+					Zotero.debug("Filename is '" + file.leafName + "'");
+				}
+				else {
+					Zotero.debug("Path is " + file.path);
+					throw e;
+				}
+				
+				// Preserve extension
+				var matches = file.leafName.match(/.+(\.[a-z0-9]{0,20})$/i);
+				var ext = matches ? matches[1] : "";
+				
+				if (pathError) {
+					let pathLength = pathByteLength - fileNameByteLength;
+					newLength -= pathLength;
+					
+					// Make sure there's a least 1 character of the basename left over
+					if (newLength - ext.length < 1) {
+						throw new Error("Path is too long");
+					}
+				}
+				
+				// Shorten the filename
+				//
+				// Shortened file could already exist if there was another file with a
+				// similar name that was also longer than the limit, so we do this in a
+				// loop, adding numbers if necessary
+				var uniqueFile = file.clone();
+				var step = 0;
+				while (step < 100) {
+					let newBaseName = uniqueFile.leafName.substr(0, newLength - ext.length);
+					if (step == 0) {
+						var newName = newBaseName + ext;
+					}
+					else {
+						var newName = newBaseName + "-" + step + ext;
+					}
+					
+					// Check actual byte length, and shorten more if necessary
+					if (Zotero.Utilities.Internal.byteLength(newName) > maxBytes) {
+						step = 0;
+						newLength--;
+						continue;
+					}
+					
+					uniqueFile.leafName = newName;
+					if (!uniqueFile.exists()) {
+						break;
+					}
+					
+					step++;
+				}
+				
+				var msg = "Shortening filename to '" + newName + "'";
+				Zotero.debug(msg, 2);
+				Zotero.log(msg, 'warning');
+				
+				try {
+					uniqueFile.create(Components.interfaces.nsIFile.type, mode);
+				}
+				catch (e) {
+					// On Linux, try 143, which is the max filename length with eCryptfs
+					if (e.name == "NS_ERROR_FILE_NAME_TOO_LONG" && Zotero.isLinux && uniqueFile.leafName.length > 143) {
+						Zotero.debug("Trying shorter filename in case of filesystem encryption", 2);
+						maxBytes = 143;
+						continue;
+					}
+					else {
+						throw e;
+					}
+				}
+				
+				file.leafName = uniqueFile.leafName;
+			}
+			break;
+		}
+		
+		return file.leafName;
+	}
+	
+	
 	this.copyToUnique = function (file, newFile) {
+		file = this.pathToFile(file);
+		newFile = this.pathToFile(newFile);
+		
 		newFile.createUnique(Components.interfaces.nsIFile.NORMAL_FILE_TYPE, 0644);
 		var newName = newFile.leafName;
 		newFile.remove(null);
 		
 		// Copy file to unique name
-		file.copyTo(newFile.parent, newName);
+		file.copyToFollowingLinks(newFile.parent, newName);
 		return newFile;
 	}
 	
 	
 	/**
 	 * Copies all files from dir into newDir
+	 *
+	 * @param {String|nsIFile} source - Source directory
+	 * @param {String|nsIFile} target - Target directory
 	 */
-	this.copyDirectory = function (dir, newDir) {
-		if (!dir.exists()) {
-			throw ("Directory doesn't exist in Zotero.File.copyDirectory()");
-		}
-		var otherFiles = dir.directoryEntries;
-		while (otherFiles.hasMoreElements()) {
-			var file = otherFiles.getNext();
-			file.QueryInterface(Components.interfaces.nsIFile);
-			file.copyTo(newDir, null);
-		}
-	}
+	this.copyDirectory = Zotero.Promise.coroutine(function* (source, target) {
+		if (source instanceof Ci.nsIFile) source = source.path;
+		if (target instanceof Ci.nsIFile) target = target.path;
+		
+		yield OS.File.makeDir(target, {
+			ignoreExisting: true,
+			unixMode: 0o755
+		});
+		
+		return this.iterateDirectory(source, function* (iterator) {
+			while (true) {
+				let entry = yield iterator.next();
+				yield OS.File.copy(entry.path, OS.Path.join(target, entry.name));
+			}
+		})
+	});
 	
 	
 	this.createDirectoryIfMissing = function (dir) {
@@ -323,30 +642,137 @@ Zotero.File = new function(){
 	}
 	
 	
+	this.createDirectoryIfMissingAsync = function (path) {
+		return Zotero.Promise.resolve(
+			OS.File.makeDir(
+				path,
+				{
+					ignoreExisting: true,
+					unixMode: 0755
+				}
+			)
+		);
+	}
+	
+	
 	/**
 	 * Check whether a directory is an ancestor directory of another directory/file
 	 */
 	this.directoryContains = function (dir, file) {
-		if (!dir.isDirectory()) {
-			throw new Error("dir must be a directory");
+		if (typeof dir != 'string') throw new Error("dir must be a string");
+		if (typeof file != 'string') throw new Error("file must be a string");
+		
+		dir = OS.Path.normalize(dir);
+		file = OS.Path.normalize(file);
+		
+		return file.startsWith(dir);
+	};
+	
+	
+	/**
+	 * @param {String} dirPath - Directory containing files to add to ZIP
+	 * @param {String} zipPath - ZIP file to create
+	 * @param {nsIRequestObserver} [observer]
+	 * @return {Promise}
+	 */
+	this.zipDirectory = Zotero.Promise.coroutine(function* (dirPath, zipPath, observer) {
+		var zw = Components.classes["@mozilla.org/zipwriter;1"]
+			.createInstance(Components.interfaces.nsIZipWriter);
+		zw.open(this.pathToFile(zipPath), 0x04 | 0x08 | 0x20); // open rw, create, truncate
+		var entries = yield _addZipEntries(dirPath, dirPath, zw);
+		if (entries.length == 0) {
+			Zotero.debug('No files to add -- removing ZIP file');
+			zw.close();
+			yield OS.File.remove(zipPath);
+			return false;
 		}
 		
-		if (dir.exists()) {
-			dir.normalize();
-		}
-		if (file.exists()) {
-			file.normalize();
-		}
+		Zotero.debug(`Creating ${OS.Path.basename(zipPath)} with ${entries.length} file(s)`);
 		
-		if (!dir.path) {
-			throw new Error("dir.path is empty");
-		}
-		if (!file.path) {
-			throw new Error("file.path is empty");
-		}
+		var context = {
+			zipWriter: zw,
+			entries
+		};
 		
-		return file.path.indexOf(dir.path) == 0;
-	}
+		var deferred = Zotero.Promise.defer();
+		zw.processQueue(
+			{
+				onStartRequest: function (request, ctx) {
+					try {
+						if (observer && observer.onStartRequest) {
+							observer.onStartRequest(request, context);
+						}
+					}
+					catch (e) {
+						deferred.reject(e);
+					}
+				},
+				onStopRequest: function (request, ctx, status) {
+					try {
+						if (observer && observer.onStopRequest) {
+							observer.onStopRequest(request, context, status);
+						}
+					}
+					catch (e) {
+						deferred.reject(e);
+						return;
+					}
+					finally {
+						zw.close();
+					}
+					deferred.resolve(true);
+				}
+			},
+			{}
+		);
+		return deferred.promise;
+	});
+	
+	
+	var _addZipEntries = Zotero.Promise.coroutine(function* (rootPath, path, zipWriter) {
+		var entries = [];
+		let iterator;
+		try {
+			iterator = new OS.File.DirectoryIterator(path);
+			yield iterator.forEach(Zotero.Promise.coroutine(function* (entry) {
+				// entry.isDir can be false for some reason on Travis, causing spurious test failures
+				if (Zotero.automatedTest && !entry.isDir && (yield OS.File.stat(entry.path)).isDir) {
+					Zotero.debug("Overriding isDir for " + entry.path);
+					entry.isDir = true;
+				}
+				
+				if (entry.isSymLink) {
+					Zotero.debug("Skipping symlink " + entry.name);
+					return;
+				}
+				if (entry.isDir) {
+					entries.concat(yield _addZipEntries(rootPath, entry.path, zipWriter));
+					return;
+				}
+				if (entry.name.startsWith('.')) {
+					Zotero.debug('Skipping file ' + entry.name);
+					return;
+				}
+				
+				Zotero.debug("Adding ZIP entry " + entry.path);
+				zipWriter.addEntryFile(
+					// Add relative path
+					entry.path.substr(rootPath.length + 1),
+					Components.interfaces.nsIZipWriter.COMPRESSION_DEFAULT,
+					Zotero.File.pathToFile(entry.path),
+					true
+				);
+				entries.push({
+					name: entry.name,
+					path: entry.path
+				});
+			}));
+		}
+		finally {
+			iterator.close();
+		}
+		return entries;
+	});
 	
 	
 	/**
@@ -370,7 +796,12 @@ Zotero.File = new function(){
 		if (!skipXML) {
 			// Strip characters not valid in XML, since they won't sync and they're probably unwanted
 			fileName = fileName.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ud800-\udfff\ufffe\uffff]/g, '');
+			
+			// Normalize to NFC
+			fileName = fileName.normalize();
 		}
+		// Don't allow hidden files
+		fileName = fileName.replace(/^\./, '');
 		// Don't allow blank or illegal filenames
 		if (!fileName || fileName == '.' || fileName == '..') {
 			fileName = '_';
@@ -497,34 +928,38 @@ Zotero.File = new function(){
 	
 	
 	this.checkFileAccessError = function (e, file, operation) {
+		file = this.pathToFile(file);
+		
+		var str = 'file.accessError.';
 		if (file) {
-			var str = Zotero.getString('file.accessError.theFile', file.path);
+			str += 'theFile'
 		}
 		else {
-			var str = Zotero.getString('file.accessError.aFile');
+			str += 'aFile'
 		}
+		str += 'CannotBe';
 		
 		switch (operation) {
 			case 'create':
-				var opWord = Zotero.getString('file.accessError.created');
-				break;
-				
-			case 'update':
-				var opWord = Zotero.getString('file.accessError.updated');
+				str += 'Created';
 				break;
 				
 			case 'delete':
-				var opWord = Zotero.getString('file.accessError.deleted');
+				str += 'Deleted';
 				break;
 				
 			default:
-				var opWord = Zotero.getString('file.accessError.updated');
+				str += 'Updated';
 		}
+		str = Zotero.getString(str, file.path ? file.path : undefined);
+		
+		Zotero.debug(file.path);
+		Zotero.debug(e, 1);
+		Components.utils.reportError(e);
 		
 		if (e.name == 'NS_ERROR_FILE_ACCESS_DENIED' || e.name == 'NS_ERROR_FILE_IS_LOCKED'
 				// These show up on some Windows systems
 				|| e.name == 'NS_ERROR_FAILURE' || e.name == 'NS_ERROR_FILE_NOT_FOUND') {
-			Zotero.debug(e);
 			str = str + " " + Zotero.getString('file.accessError.cannotBe') + " " + opWord + ".";
 			var checkFileWindows = Zotero.getString('file.accessError.message.windows');
 			var checkFileOther = Zotero.getString('file.accessError.message.other');
@@ -553,5 +988,70 @@ Zotero.File = new function(){
 		}
 		
 		throw (e);
+	}
+	
+	
+	this.checkPathAccessError = function (e, path, operation) {
+		var str = 'file.accessError.';
+		if (path) {
+			str += 'theFile'
+		}
+		else {
+			str += 'aFile'
+		}
+		str += 'CannotBe';
+		
+		switch (operation) {
+			case 'create':
+				str += 'Created';
+				break;
+				
+			case 'delete':
+				str += 'Deleted';
+				break;
+				
+			default:
+				str += 'Updated';
+		}
+		str = Zotero.getString(str, path ? path : undefined);
+		
+		Zotero.debug(path);
+		Zotero.debug(e, 1);
+		Components.utils.reportError(e);
+		
+		// TODO: Check for specific errors?
+		if (e instanceof OS.File.Error) {
+			let checkFileWindows = Zotero.getString('file.accessError.message.windows');
+			let checkFileOther = Zotero.getString('file.accessError.message.other');
+			var msg = str + "\n\n"
+					+ (Zotero.isWin ? checkFileWindows : checkFileOther)
+					+ "\n\n"
+					+ Zotero.getString('file.accessError.restart');
+			
+			var e = new Zotero.Error(
+				msg,
+				0,
+				{
+					dialogButtonText: Zotero.getString('file.accessError.showParentDir'),
+					dialogButtonCallback: function () {
+						try {
+							file.parent.QueryInterface(Components.interfaces.nsILocalFile);
+							file.parent.reveal();
+						}
+						// Unsupported on some platforms
+						catch (e2) {
+							Zotero.launchFile(file.parent);
+						}
+					}
+				}
+			);
+		}
+		
+		throw e;
+	}
+
+
+	this.isDropboxDirectory = function(path) {
+		return path.toLowerCase().indexOf('dropbox') != -1;
 	}
 }

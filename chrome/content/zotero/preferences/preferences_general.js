@@ -34,43 +34,29 @@ Zotero_Preferences.General = {
 				'zotero.preferences.launchNonNativeFiles', Zotero.appName
 			);
 		}
-	},
-	
-	/**
-	 * Sets "Status bar icon" to "None" if Zotero is set to load in separate tab
-	 */
-	handleShowInPreferenceChange: function () {
-		var showInSeparateTab = document.getElementById("zotero-prefpane-general-showIn-separateTab");
-		var showInAppTab = document.getElementById("zotero-prefpane-general-showIn-appTab");
-		if(showInAppTab.selected) {
-			document.getElementById('statusBarIcon').selectedItem = document.getElementById('statusBarIcon-none');
-			Zotero.Prefs.set("statusBarIcon", 0);
-		} else {
-			document.getElementById('statusBarIcon').selectedItem = document.getElementById('statusBarIcon-full');
-			Zotero.Prefs.set("statusBarIcon", 2);
-		}
+		
+		document.getElementById('noteFontSize').value = Zotero.Prefs.get('note.fontSize');
 	},
 	
 	
-	updateTranslators: function () {
-		Zotero.Schema.updateFromRepository(true, function (xmlhttp, updated) {
-			var button = document.getElementById('updateButton');
-			if (button) {
-				if (updated===-1) {
-					var label = Zotero.getString('zotero.preferences.update.upToDate');
-				}
-				else if (updated) {
-					var label = Zotero.getString('zotero.preferences.update.updated');
-				}
-				else {
-					var label = Zotero.getString('zotero.preferences.update.error');
-				}
-				button.setAttribute('label', label);
-				
-				if (updated && Zotero_Preferences.Cite) {
-					Zotero_Preferences.Cite.refreshStylesList();
-				}
+	updateTranslators: Zotero.Promise.coroutine(function* () {
+		var updated = yield Zotero.Schema.updateFromRepository(true);
+		var button = document.getElementById('updateButton');
+		if (button) {
+			if (updated===-1) {
+				var label = Zotero.getString('zotero.preferences.update.upToDate');
 			}
-		});
-	}
+			else if (updated) {
+				var label = Zotero.getString('zotero.preferences.update.updated');
+			}
+			else {
+				var label = Zotero.getString('zotero.preferences.update.error');
+			}
+			button.setAttribute('label', label);
+			
+			if (updated && Zotero_Preferences.Cite) {
+				yield Zotero_Preferences.Cite.refreshStylesList();
+			}
+		}
+	})
 }
