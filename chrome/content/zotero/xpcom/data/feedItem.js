@@ -46,7 +46,7 @@ Zotero.defineProperty(Zotero.FeedItem.prototype, 'isFeedItem', {
 });
 
 Zotero.defineProperty(Zotero.FeedItem.prototype, 'guid', {
-	get: function() this._feedItemGUID,
+	get: function() { return this._feedItemGUID; },
 	set: function(val) {
 		if (this.id) throw new Error('Cannot set GUID after item ID is already set');
 		if (typeof val != 'string') throw new Error('GUID must be a non-empty string');
@@ -203,8 +203,8 @@ Zotero.FeedItem.prototype.toggleRead = Zotero.Promise.coroutine(function* (state
  * Uses the item url to translate an existing feed item.
  * If libraryID empty, overwrites feed item, otherwise saves
  * in the library
- * @param libraryID {int} save item in library
- * @param collectionID {int} add item to collection
+ * @param libraryID {Integer} save item in library
+ * @param collectionID {Integer} add item to collection
  * @return {Promise<FeedItem|Item>} translated feed item
  */
 Zotero.FeedItem.prototype.translate = Zotero.Promise.coroutine(function* (libraryID, collectionID) {
@@ -215,29 +215,31 @@ Zotero.FeedItem.prototype.translate = Zotero.Promise.coroutine(function* (librar
 	}
 
 	let deferred = Zotero.Promise.defer();
-	let error = function(e) { Zotero.debug(e, 1); deferred.reject(e); };
+	let error = function(e) {  };
 	let translate = new Zotero.Translate.Web();
+	var win = Services.wm.getMostRecentWindow("navigator:browser");
+	let progressWindow = win.ZoteroPane.progressWindow;
 	
 	if (libraryID) {
-		// Show progress notifications when scraping to a library
-		var win = Services.wm.getMostRecentWindow("navigator:browser");
+		// Show progress notifications when scraping to a library.
 		translate.clearHandlers("done");
 		translate.clearHandlers("itemDone");
-		translate.setHandler("done", win.Zotero_Browser.progress.Translation.doneHandler);
-		translate.setHandler("itemDone", win.Zotero_Browser.progress.Translation.itemDoneHandler());
+		translate.setHandler("done", progressWindow.Translation.doneHandler);
+		translate.setHandler("itemDone", progressWindow.Translation.itemDoneHandler());
 		if (collectionID) {
 			var collection = yield Zotero.Collections.getAsync(collectionID);
 		}
-		win.Zotero_Browser.progress.show();
-		win.Zotero_Browser.progress.Translation.scrapingTo(libraryID, collection);
+		progressWindow.show();
+		progressWindow.Translation.scrapingTo(libraryID, collection);
 	}
 	
 	// Load document
-	let hiddenBrowser = Zotero.HTTP.processDocuments(
-		this.getField('url'), 
-		item => deferred.resolve(item),
-		()=>{}, error, true
-	);
+	try {
+		yield Zotero.HTTP.processDocuments(this.getField('url'), doc => deferred.resolve(doc));
+	} catch (e) {
+		Zotero.debug(e, 1);
+		deferred.reject(e);
+	}
 	let doc = yield deferred.promise;
 
 	// Set translate document
@@ -251,25 +253,9 @@ Zotero.FeedItem.prototype.translate = Zotero.Promise.coroutine(function* (librar
 	if (!translators || !translators.length) {
 		Zotero.debug("No translators detected for feed item " + this.id + " with URL " + this.getField('url') + 
 			' -- cloning item instead', 2);
-		let dbItem = this.clone(libraryID);
-		if (collectionID) {
-			dbItem.addToCollection(collectionID);
-		}
-		yield dbItem.saveTx();
-		
-		let item = {title: dbItem.getField('title'), itemType: dbItem.itemType};
-		
-		// Add snapshot
-		if (Zotero.Libraries.get(libraryID).filesEditable) {
-			item.attachments = [{title: "Snapshot"}];
-			yield Zotero.Attachments.importFromDocument({
-				document: doc,
-				parentItemID: dbItem.id
-			});
-		}
-		
-		win.Zotero_Browser.progress.Translation.itemDoneHandler()(null, null, item);
-		win.Zotero_Browser.progress.Translation.doneHandler(null, true);
+		let item = yield this.clone(libraryID, collectionID, doc);
+		progressWindow.Translation.itemDoneHandler()(null, null, item);
+		progressWindow.Translation.doneHandler(null, true);
 		return;
 	}
 	translate.setTranslator(translators[0]);
@@ -279,7 +265,12 @@ Zotero.FeedItem.prototype.translate = Zotero.Promise.coroutine(function* (librar
 	if (libraryID) {
 		let result = yield translate.translate({libraryID, collections: collectionID ? [collectionID] : false})
 			.then(items => items ? items[0] : false);
-		Zotero.Browser.deleteHiddenBrowser(hiddenBrowser);
+		if (!result) {
+			let item = yield this.clone(libraryID, collectionID, doc);
+			progressWindow.Translation.itemDoneHandler()(null, null, item);
+			progressWindow.Translation.doneHandler(null, true);
+			return;
+		}
 		return result;
 	}
 	
@@ -292,7 +283,6 @@ Zotero.FeedItem.prototype.translate = Zotero.Promise.coroutine(function* (librar
 	translate.translate({libraryID: false, saveAttachments: false});
 	
 	let itemData = yield deferred.promise;
-	Zotero.Browser.deleteHiddenBrowser(hiddenBrowser);
 	
 	// clean itemData
 	const deleteFields = ['attachments', 'notes', 'id', 'itemID', 'path', 'seeAlso', 'version', 'dateAdded', 'dateModified'];
@@ -305,4 +295,31 @@ Zotero.FeedItem.prototype.translate = Zotero.Promise.coroutine(function* (librar
 	yield this.saveTx();
 	
 	return this;
+});
+
+/**
+ * Clones the feed item (usually, when proper translation is unavailable)
+ * @param libraryID {Integer} save item in library
+ * @param collectionID {Integer} add item to collection
+ * @return {Promise<FeedItem|Item>} translated feed item
+ */
+Zotero.FeedItem.prototype.clone = Zotero.Promise.coroutine(function* (libraryID, collectionID, doc) {
+	let dbItem = Zotero.Item.prototype.clone.call(this, libraryID);
+	if (collectionID) {
+		dbItem.addToCollection(collectionID);
+	}
+	yield dbItem.saveTx();
+	
+	let item = {title: dbItem.getField('title'), itemType: dbItem.itemType, attachments: []};
+	
+	// Add snapshot
+	if (Zotero.Libraries.get(libraryID).filesEditable) {
+		item.attachments = [{title: "Snapshot"}];
+		yield Zotero.Attachments.importFromDocument({
+			document: doc,
+			parentItemID: dbItem.id
+		});
+	}
+	
+	return item;
 });

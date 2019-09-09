@@ -73,22 +73,36 @@ describe("Zotero.Library", function() {
 			
 			assert.isTrue(library.editable);
 			assert.isTrue(Zotero.Libraries.isEditable(library.libraryID), "sets editable in cache to true");
+			assert.equal((yield Zotero.DB.valueQueryAsync("SELECT editable FROM libraries WHERE libraryID=?", library.libraryID)), 1)
 			
 			library.editable = false;
 			yield library.saveTx();
 			assert.isFalse(library.editable);
 			assert.isFalse(Zotero.Libraries.isEditable(library.libraryID), "sets editable in cache to false");
+			assert.equal((yield Zotero.DB.valueQueryAsync("SELECT editable FROM libraries WHERE libraryID=?", library.libraryID)), 0)
 		});
-		it("should not be settable for user and publications libraries", function* () {
+		
+		it("should also set filesEditable to false", function* () {
+			let library = yield createGroup({ editable: true, filesEditable: true });
+			assert.isTrue(library.filesEditable);
+			
+			library.editable = false;
+			yield library.saveTx();
+			assert.isFalse(library.filesEditable);
+			assert.equal((yield Zotero.DB.valueQueryAsync("SELECT filesEditable FROM libraries WHERE libraryID=?", library.libraryID)), 0)
+		});
+		
+		it("should not be settable for user libraries", function* () {
 			let library = Zotero.Libraries.get(Zotero.Libraries.userLibraryID);
 			assert.throws(function() {library.editable = false}, /^Cannot change _libraryEditable for user library$/, "does not allow setting user library as not editable");
-			
-			library = Zotero.Libraries.get(Zotero.Libraries.publicationsLibraryID);
-			assert.throws(function() {library.editable = false}, /^Cannot change _libraryEditable for publications library$/, "does not allow setting publications library as not editable");
 		});
 	});
 	
 	describe("#filesEditable", function() {
+		it("should always return true for user library", function() {
+			assert.isTrue(Zotero.Libraries.userLibrary.filesEditable);
+		});
+		
 		it("should return files editable status", function() {
 			let library = Zotero.Libraries.get(Zotero.Libraries.userLibraryID);
 			assert.isTrue(library.filesEditable, 'user library is files editable');
@@ -105,19 +119,56 @@ describe("Zotero.Library", function() {
 			assert.isFalse(library.filesEditable);
 			assert.isFalse(Zotero.Libraries.isFilesEditable(library.libraryID), "sets files editable in cache to false");
 		});
-		it("should not be settable for user and publications libraries", function* () {
+		
+		it("should not be settable for user libraries", function* () {
 			let library = Zotero.Libraries.get(Zotero.Libraries.userLibraryID);
 			assert.throws(function() {library.filesEditable = false}, /^Cannot change _libraryFilesEditable for user library$/, "does not allow setting user library as not files editable");
+		});
+	});
+	
+	describe("#allowsLinkedFiles", function () {
+		it("should return true for personal library", function () {
+			assert.isTrue(Zotero.Libraries.userLibrary.allowsLinkedFiles);
+		});
+		
+		it("should return false for group libraries", async function () {
+			var group = await getGroup();
+			assert.isFalse(group.allowsLinkedFiles);
+		});
+	});
+	
+	describe("#archived", function() {
+		it("should return archived status", function() {
+			let library = Zotero.Libraries.get(Zotero.Libraries.userLibraryID);
+			assert.isFalse(library.archived, 'user library is not archived');
+		});
+		
+		it("should allow setting archived status", function* () {
+			let library = yield createGroup({ editable: false, archived: true });
+			assert.isTrue(library.archived);
+			assert.equal((yield Zotero.DB.valueQueryAsync("SELECT archived FROM libraries WHERE libraryID=?", library.libraryID)), 1)
 			
-			library = Zotero.Libraries.get(Zotero.Libraries.publicationsLibraryID);
-			assert.throws(function() {library.filesEditable = false}, /^Cannot change _libraryFilesEditable for publications library$/, "does not allow setting publications library as not files editable");
+			library.archived = false;
+			yield library.saveTx();
+			assert.isFalse(library.archived);
+			assert.equal((yield Zotero.DB.valueQueryAsync("SELECT archived FROM libraries WHERE libraryID=?", library.libraryID)), 0)
+		});
+		
+		it("should not be settable for user libraries", function* () {
+			let library = Zotero.Libraries.get(Zotero.Libraries.userLibraryID);
+			assert.throws(() => library.archived = true, /^Cannot change _libraryArchived for user library$/, "does not allow setting user library as archived");
+		});
+		
+		it("should only be settable on read-only library", function* () {
+			let library = yield createGroup();
+			assert.throws(() => library.archived = true, /^Cannot set editable library as archived$/);
 		});
 	});
 	
 	describe("#save()", function() {
 		it("should require mandatory parameters to be set", function* () {
 			let library = new Zotero.Library({ editable: true, filesEditable: true });
-			yield assert.isRejected(library.saveTx(), /^Error: libraryType must be set before saving/, 'libraryType is mandatory');
+			yield assert.isRejected(library.saveTx(), /^libraryType must be set before saving/, 'libraryType is mandatory');
 			
 			// Required group params
 			let groupID = Zotero.Utilities.rand(1000, 10000);
@@ -125,10 +176,10 @@ describe("Zotero.Library", function() {
 			let description = '';
 			let version = Zotero.Utilities.rand(1000, 10000);
 			library = new Zotero.Group({ filesEditable: true, groupID, name , description, version });
-			yield assert.isRejected(library.saveTx(), /^Error: editable must be set before saving/, 'editable is mandatory');
+			yield assert.isRejected(library.saveTx(), /^editable must be set before saving/, 'editable is mandatory');
 			
 			library = new Zotero.Group({ editable: true, groupID, name , description, version });
-			yield assert.isRejected(library.saveTx(), /^Error: filesEditable must be set before saving/, 'filesEditable is mandatory');
+			yield assert.isRejected(library.saveTx(), /^filesEditable must be set before saving/, 'filesEditable is mandatory');
 			
 			library = new Zotero.Group({ editable: true, filesEditable: true, groupID, name , description, version });
 			yield assert.isFulfilled(library.saveTx());
@@ -177,10 +228,7 @@ describe("Zotero.Library", function() {
 		
 		it("should not allow erasing permanent libraries", function* () {
 			let library = Zotero.Libraries.get(Zotero.Libraries.userLibraryID);
-			yield assert.isRejected(library.eraseTx(), /^Error: Cannot erase library of type 'user'$/, "does not allow erasing user library");
-			
-			library = Zotero.Libraries.get(Zotero.Libraries.publicationsLibraryID);
-			yield assert.isRejected(library.eraseTx(), /^Error: Cannot erase library of type 'publications'$/, "does not allow erasing publications library");
+			yield assert.isRejected(library.eraseTx(), /^Cannot erase library of type 'user'$/, "does not allow erasing user library");
 		});
 		
 		it("should not allow erasing unsaved libraries", function* () {
@@ -214,7 +262,32 @@ describe("Zotero.Library", function() {
 			assert.notOk((yield Zotero.Collections.getAsync(collection.id)), 'collection was unloaded');
 			assert.notOk((yield Zotero.Items.getAsync(item.id)), 'item was unloaded');
 		});
+		
+		it("should delete attachment files", async function () {
+			// My Library
+			var item1 = await createDataObject('item');
+			var attachment1 = await importFileAttachment('test.png', { parentID: item1.id });
+			var path1 = attachment1.getFilePath();
+			
+			// Group
+			var group = await createGroup();
+			var libraryID = group.libraryID;
+			var item2 = await createDataObject('item', { libraryID });
+			var attachment2 = await importFileAttachment('test.png', { libraryID, parentID: item2.id });
+			var path2 = attachment2.getFilePath();
+			
+			assert.isTrue(await OS.File.exists(path1));
+			assert.isTrue(await OS.File.exists(path2));
+			
+			await group.eraseTx();
+			
+			// My Library file should still exist, but group file should be deleted
+			assert.isTrue(await OS.File.exists(path1));
+			assert.isFalse(await OS.File.exists(path2));
+		});
 	});
+	
+	
 	describe("#hasCollections()", function() {
 		it("should throw if called before saving a library", function() {
 			let library = new Zotero.Library();

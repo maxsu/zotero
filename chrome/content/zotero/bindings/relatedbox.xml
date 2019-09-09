@@ -81,6 +81,11 @@
 						if (keys.length) {
 							for (let key of keys) {
 								let item = Zotero.Items.getByLibraryAndKey(this.item.libraryID, key);
+								if (!item) {
+									Zotero.debug(`Related item ${this.item.libraryID}/${key} not found `
+										+ `for item ${this.item.libraryKey}`, 2);
+									continue;
+								}
 								r = r + item.getDisplayTitle() + ", ";
 							}
 							r = r.substr(0,r.length-2);
@@ -139,31 +144,15 @@
 							let relatedItem = Zotero.Items.getByLibraryAndKey(
 								this.item.libraryID, key
 							);
+							if (!relatedItem) {
+								Zotero.debug(`Related item ${this.item.libraryID}/${key} not found `
+									+ `for item ${this.item.libraryKey}`, 2);
+								continue;
+							}
 							let id = relatedItem.id;
 							let icon = document.createElement("image");
 							icon.className = "zotero-box-icon";
-							let type = Zotero.ItemTypes.getName(relatedItem.itemTypeID);
-							if (type=='attachment')
-							{
-								switch (relatedItem.attaachmentLinkMode) {
-									case Zotero.Attachments.LINK_MODE_LINKED_URL:
-										type += '-web-link';
-										break;
-									
-									case Zotero.Attachments.LINK_MODE_IMPORTED_URL:
-										type += '-snapshot';
-										break;
-									
-									case Zotero.Attachments.LINK_MODE_LINKED_FILE:
-										type += '-link';
-										break;
-									
-									case Zotero.Attachments.LINK_MODE_IMPORTED_FILE:
-										type += '-file';
-										break;
-								}
-							}
-							icon.setAttribute('src','chrome://zotero/skin/treeitem-' + type + '.png');
+							icon.setAttribute('src', relatedItem.getImageSrc());
 					
 							var label = document.createElement("label");
 							label.className = "zotero-box-label";
@@ -173,7 +162,7 @@
 							
 							var box = document.createElement('box');
 							box.setAttribute('onclick',
-								"document.getBindingParent(this).showItem('" + id + "')");
+								"document.getBindingParent(this).showItem(" + id + ")");
 							box.setAttribute('class','zotero-clicky');
 							box.setAttribute('flex','1');
 							box.appendChild(icon);
@@ -183,7 +172,7 @@
 								var remove = document.createElement("label");
 								remove.setAttribute('value','-');
 								remove.setAttribute('onclick',
-									"document.getBindingParent(this).remove('" + id + "');");
+									"document.getBindingParent(this).remove(" + id + ");");
 								remove.setAttribute('class','zotero-clicky zotero-clicky-minus');
 							}
 							
@@ -194,7 +183,7 @@
 							}
 							rows.appendChild(row);
 						}
-						this.updateCount(relatedKeys.length);
+						this.updateCount(rows.childNodes.length);
 					}
 				]]></body>
 			</method>

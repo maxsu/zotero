@@ -27,6 +27,7 @@
 Zotero.ItemFields = new function() {
 	// Private members
 	var _fields = {};
+	var _allFields = [];
 	var _fieldsFormats = [];
 	var _fieldsLoaded;
 	var _itemTypeFieldsLoaded;
@@ -75,7 +76,7 @@ Zotero.ItemFields = new function() {
 		var sql = "SELECT DISTINCT baseFieldID FROM baseFieldMappingsCombined";
 		var baseFields = yield Zotero.DB.columnQueryAsync(sql);
 		
-		for each(var field in fields) {
+		for (let field of fields) {
 			_fields[field['fieldID']] = {
 				id: field['fieldID'],
 				name: field.fieldName,
@@ -87,6 +88,10 @@ Zotero.ItemFields = new function() {
 			};
 			// Store by name as well as id
 			_fields[field['fieldName']] = _fields[field['fieldID']];
+			_allFields.push({
+				id: field.fieldID,
+				name: field.fieldName
+			});
 		}
 		
 		_fieldsLoaded = true;
@@ -121,6 +126,11 @@ Zotero.ItemFields = new function() {
 		
 		return _fields[field] ? _fields[field]['name'] : false;
 	}
+	
+	
+	this.getAll = function () {
+		return [..._allFields];
+	};
 	
 	
 	function getLocalizedString(itemType, field) {
@@ -204,7 +214,7 @@ Zotero.ItemFields = new function() {
 			throw new Error("Item type field data not found for itemTypeID " + itemTypeID);
 		}
 		
-		return _itemTypeFields[itemTypeID];
+		return [..._itemTypeFields[itemTypeID]];
 	}
 	
 	
@@ -258,6 +268,11 @@ Zotero.ItemFields = new function() {
 		var baseFieldID = this.getID(baseField);
 		if (!baseFieldID) {
 			throw new Error("Invalid field '" + baseField + '" for base field');
+		}
+		
+		// If field isn't a base field, return it if it's valid for the type
+		if (!this.isBaseField(baseFieldID)) {
+			return this.isValidForType(baseFieldID, itemTypeID) ? baseFieldID : false;
 		}
 		
 		return _baseTypeFields[itemTypeID][baseFieldID];
@@ -317,7 +332,7 @@ Zotero.ItemFields = new function() {
 		}
 		
 		return _typeFieldIDsByBase[baseFieldID] ?
-			_typeFieldIDsByBase[baseFieldID] : false;
+			[..._typeFieldIDsByBase[baseFieldID]] : false;
 	}
 	
 	
@@ -440,7 +455,7 @@ Zotero.ItemFields = new function() {
 		var baseFields = yield Zotero.DB.columnQueryAsync(sql);
 		
 		var fields = [];
-		for each(var row in rows) {
+		for (let row of rows) {
 			if (!fields[row.itemTypeID]) {
 				fields[row.itemTypeID] = [];
 			}

@@ -147,6 +147,7 @@ describe("ZoteroPane", function() {
 		var baseURL = `http://localhost:${port}/`;
 		var server;
 		var responses = {};
+		var httpd;
 		
 		var setup = Zotero.Promise.coroutine(function* (options = {}) {
 			server = sinon.fakeServer.create();
@@ -157,49 +158,20 @@ describe("ZoteroPane", function() {
 			setHTTPResponse(server, baseURL, response, responses);
 		}
 		
-		before(function () {
-			Zotero.HTTP.mock = sinon.FakeXMLHttpRequest;
-			
-			Zotero.Sync.Runner.apiKey = apiKey;
-			Zotero.Sync.Runner.baseURL = baseURL;
-		})
-		beforeEach(function* () {
-			this.httpd = new HttpServer();
-			this.httpd.start(port);
-			
-			yield Zotero.Users.setCurrentUserID(1);
-			yield Zotero.Users.setCurrentUsername("testuser");
-		})
-		afterEach(function* () {
-			var defer = new Zotero.Promise.defer();
-			this.httpd.stop(() => defer.resolve());
-			yield defer.promise;
-		})
-		
-		it("should download an attachment on-demand", function* () {
-			yield setup();
-			Zotero.Sync.Storage.Local.downloadAsNeeded(Zotero.Libraries.userLibraryID, true);
-			
+		async function downloadOnDemand() {
 			var item = new Zotero.Item("attachment");
 			item.attachmentLinkMode = 'imported_file';
 			item.attachmentPath = 'storage:test.txt';
 			// TODO: Test binary data
 			var text = Zotero.Utilities.randomString();
 			item.attachmentSyncState = "to_download";
-			yield item.saveTx();
+			await item.saveTx();
 			
 			var mtime = "1441252524000";
 			var md5 = Zotero.Utilities.Internal.md5(text)
 			
-			var newStorageSyncTime = Math.round(new Date().getTime() / 1000);
-			setResponse({
-				method: "GET",
-				url: "users/1/laststoragesync",
-				status: 200,
-				text: "" + newStorageSyncTime
-			});
 			var s3Path = `pretend-s3/${item.key}`;
-			this.httpd.registerPathHandler(
+			httpd.registerPathHandler(
 				`/users/1/items/${item.key}/file`,
 				{
 					handle: function (request, response) {
@@ -211,7 +183,7 @@ describe("ZoteroPane", function() {
 					}
 				}
 			);
-			this.httpd.registerPathHandler(
+			httpd.registerPathHandler(
 				"/" + s3Path,
 				{
 					handle: function (request, response) {
@@ -221,14 +193,233 @@ describe("ZoteroPane", function() {
 				}
 			);
 			
-			yield zp.viewAttachment(item.id);
+			// Disable loadURI() so viewAttachment() doesn't trigger translator loading
+			var stub = sinon.stub(Zotero, "launchFile");
 			
-			assert.equal((yield item.attachmentHash), md5);
-			assert.equal((yield item.attachmentModificationTime), mtime);
-			var path = yield item.getFilePathAsync();
-			assert.equal((yield Zotero.File.getContentsAsync(path)), text);
+			await zp.viewAttachment(item.id);
+			
+			assert.ok(stub.calledOnce);
+			assert.ok(stub.calledWith(item.getFilePath()));
+			stub.restore();
+			
+			assert.equal(await item.attachmentHash, md5);
+			assert.equal(await item.attachmentModificationTime, mtime);
+			var path = await item.getFilePathAsync();
+			assert.equal(await Zotero.File.getContentsAsync(path), text);
+		};
+		
+		before(function () {
+			Zotero.HTTP.mock = sinon.FakeXMLHttpRequest;
 		})
+		beforeEach(function* () {
+			Zotero.Prefs.set("api.url", baseURL);
+			Zotero.Sync.Runner.apiKey = apiKey;
+				
+			httpd = new HttpServer();
+			httpd.start(port);
+			
+			yield Zotero.Users.setCurrentUserID(1);
+			yield Zotero.Users.setCurrentUsername("testuser");
+		})
+		afterEach(function* () {
+			var defer = new Zotero.Promise.defer();
+			httpd.stop(() => defer.resolve());
+			yield defer.promise;
+		})
+		after(function () {
+			Zotero.HTTP.mock = null;
+		});
+		
+		it("should download an attachment on-demand in as-needed mode", function* () {
+			yield setup();
+			Zotero.Sync.Storage.Local.downloadAsNeeded(Zotero.Libraries.userLibraryID, true);
+			yield downloadOnDemand();
+		});
+		
+		it("should download an attachment on-demand in at-sync-time mode", function* () {
+			yield setup();
+			Zotero.Sync.Storage.Local.downloadOnSync(Zotero.Libraries.userLibraryID, true);
+			yield downloadOnDemand();
+		});
 	})
+	
+	
+	describe("#renameSelectedAttachmentsFromParents()", function () {
+		it("should rename a linked file", async function () {
+			var oldFilename = 'old.png';
+			var newFilename = 'Test.png';
+			var file = getTestDataDirectory();
+			file.append('test.png');
+			var tmpDir = await getTempDirectory();
+			var oldFile = OS.Path.join(tmpDir, oldFilename);
+			await OS.File.copy(file.path, oldFile);
+			
+			var item = createUnsavedDataObject('item');
+			item.setField('title', 'Test');
+			await item.saveTx();
+			
+			var attachment = await Zotero.Attachments.linkFromFile({
+				file: oldFile,
+				parentItemID: item.id
+			});
+			await zp.selectItem(attachment.id);
+			
+			await assert.eventually.isTrue(zp.renameSelectedAttachmentsFromParents());
+			assert.equal(attachment.attachmentFilename, newFilename);
+			var path = await attachment.getFilePathAsync();
+			assert.equal(OS.Path.basename(path), newFilename)
+			await OS.File.exists(path);
+		});
+		
+		it("should use unique name for linked file if target name is taken", async function () {
+			var oldFilename = 'old.png';
+			var newFilename = 'Test.png';
+			var uniqueFilename = 'Test 2.png';
+			var file = getTestDataDirectory();
+			file.append('test.png');
+			var tmpDir = await getTempDirectory();
+			var oldFile = OS.Path.join(tmpDir, oldFilename);
+			await OS.File.copy(file.path, oldFile);
+			// Create file with target filename
+			await Zotero.File.putContentsAsync(OS.Path.join(tmpDir, newFilename), '');
+			
+			var item = createUnsavedDataObject('item');
+			item.setField('title', 'Test');
+			await item.saveTx();
+			
+			var attachment = await Zotero.Attachments.linkFromFile({
+				file: oldFile,
+				parentItemID: item.id
+			});
+			await zp.selectItem(attachment.id);
+			
+			await assert.eventually.isTrue(zp.renameSelectedAttachmentsFromParents());
+			assert.equal(attachment.attachmentFilename, uniqueFilename);
+			var path = await attachment.getFilePathAsync();
+			assert.equal(OS.Path.basename(path), uniqueFilename)
+			await OS.File.exists(path);
+		});
+		
+		it("should use unique name for linked file without extension if target name is taken", async function () {
+			var oldFilename = 'old';
+			var newFilename = 'Test';
+			var uniqueFilename = 'Test 2';
+			var file = getTestDataDirectory();
+			file.append('test.png');
+			var tmpDir = await getTempDirectory();
+			var oldFile = OS.Path.join(tmpDir, oldFilename);
+			await OS.File.copy(file.path, oldFile);
+			// Create file with target filename
+			await Zotero.File.putContentsAsync(OS.Path.join(tmpDir, newFilename), '');
+			
+			var item = createUnsavedDataObject('item');
+			item.setField('title', 'Test');
+			await item.saveTx();
+			
+			var attachment = await Zotero.Attachments.linkFromFile({
+				file: oldFile,
+				parentItemID: item.id
+			});
+			await zp.selectItem(attachment.id);
+			
+			await assert.eventually.isTrue(zp.renameSelectedAttachmentsFromParents());
+			assert.equal(attachment.attachmentFilename, uniqueFilename);
+			var path = await attachment.getFilePathAsync();
+			assert.equal(OS.Path.basename(path), uniqueFilename)
+			await OS.File.exists(path);
+		});
+	});
+	
+	
+	describe("#duplicateSelectedItem()", function () {
+		it("should add reverse relations", async function () {
+			await selectLibrary(win);
+			var item1 = await createDataObject('item');
+			var item2 = await createDataObject('item');
+			item1.addRelatedItem(item2);
+			await item1.saveTx();
+			item2.addRelatedItem(item1);
+			await item2.saveTx();
+			var item3 = await zp.duplicateSelectedItem();
+			assert.sameMembers(item3.relatedItems, [item1.key]);
+			assert.sameMembers(item2.relatedItems, [item1.key]);
+			assert.sameMembers(item1.relatedItems, [item2.key, item3.key]);
+		});
+	});
+	
+	
+	describe("#deleteSelectedItems()", function () {
+		it("should remove an item from My Publications", function* () {
+			var item = createUnsavedDataObject('item');
+			item.inPublications = true;
+			yield item.saveTx();
+			
+			yield zp.collectionsView.selectByID("P" + userLibraryID);
+			yield waitForItemsLoad(win);
+			var iv = zp.itemsView;
+			
+			var selected = iv.selectItem(item.id);
+			assert.ok(selected);
+			
+			var tree = doc.getElementById('zotero-items-tree');
+			tree.focus();
+			
+			yield Zotero.Promise.delay(1);
+			
+			var promise = waitForDialog();
+			var modifyPromise = waitForItemEvent('modify');
+			
+			var event = doc.createEvent("KeyboardEvent");
+			event.initKeyEvent("keypress", true, true, window, false, false, false, false, 46, 0);
+			tree.dispatchEvent(event);
+			yield promise;
+			yield modifyPromise;
+			
+			assert.isFalse(item.inPublications);
+			assert.isFalse(item.deleted);
+		});
+		
+		it("should move an item to trash from My Publications", function* () {
+			var item = createUnsavedDataObject('item');
+			item.inPublications = true;
+			yield item.saveTx();
+			
+			yield zp.collectionsView.selectByID("P" + userLibraryID);
+			yield waitForItemsLoad(win);
+			var iv = zp.itemsView;
+			
+			var selected = iv.selectItem(item.id);
+			assert.ok(selected);
+			
+			var tree = doc.getElementById('zotero-items-tree');
+			tree.focus();
+			
+			yield Zotero.Promise.delay(1);
+			
+			var promise = waitForDialog();
+			var modifyPromise = waitForItemEvent('modify');
+			
+			var event = doc.createEvent("KeyboardEvent");
+			event.initKeyEvent(
+				"keypress",
+				true,
+				true,
+				window,
+				false,
+				false,
+				!Zotero.isMac, // shift
+				Zotero.isMac, // meta
+				46,
+				0
+			);
+			tree.dispatchEvent(event);
+			yield promise;
+			yield modifyPromise;
+			
+			assert.isTrue(item.inPublications);
+			assert.isTrue(item.deleted);
+		});
+	});
 	
 	describe("#deleteSelectedCollection()", function () {
 		it("should delete collection but not descendant items by default", function* () {
@@ -279,7 +470,7 @@ describe("ZoteroPane", function() {
 			// Show Duplicate Items
 			var id = "D" + userLibraryID;
 			assert.isFalse(cv.getRowIndexByID(id));
-			yield zp.setVirtual(userLibraryID, 'duplicates', true);
+			yield zp.setVirtual(userLibraryID, 'duplicates', true, true);
 			// Duplicate Items should be selected
 			assert.equal(cv.selectedTreeRow.id, id);
 			// Should be missing from pref
@@ -299,7 +490,7 @@ describe("ZoteroPane", function() {
 			// Show Unfiled Items
 			id = "U" + userLibraryID;
 			assert.isFalse(cv.getRowIndexByID(id));
-			yield zp.setVirtual(userLibraryID, 'unfiled', true);
+			yield zp.setVirtual(userLibraryID, 'unfiled', true, true);
 			// Unfiled Items should be selected
 			assert.equal(cv.selectedTreeRow.id, id);
 			// Should be missing from pref
@@ -319,7 +510,7 @@ describe("ZoteroPane", function() {
 			
 			// Show Duplicate Items
 			var id = "D" + userLibraryID;
-			yield zp.setVirtual(userLibraryID, 'duplicates', true);
+			yield zp.setVirtual(userLibraryID, 'duplicates', true, true);
 			
 			// Library should have been expanded and Duplicate Items selected
 			assert.ok(cv.getRowIndexByID(id));
@@ -382,7 +573,7 @@ describe("ZoteroPane", function() {
 			yield zp.setVirtual(group.libraryID, 'unfiled', false);
 			// Row should have been removed
 			assert.isFalse(cv.getRowIndexByID(id));
-			// Pref should have been udpated
+			// Pref should have been updated
 			assert.isFalse(JSON.parse(Zotero.Prefs.get('unfiledLibraries'))[group.libraryID]);
 			// Group row shouldn't have changed
 			assert.equal(cv.getRowIndexByID(group.treeViewID), groupRow);
@@ -396,6 +587,23 @@ describe("ZoteroPane", function() {
 	describe("#editSelectedCollection()", function () {
 		it("should edit a saved search", function* () {
 			var search = yield createDataObject('search');
+			var promise = waitForWindow('chrome://zotero/content/searchDialog.xul', function (win) {
+				let searchBox = win.document.getElementById('search-box');
+				var c = searchBox.search.getCondition(
+					searchBox.search.addCondition("title", "contains", "foo")
+				);
+				searchBox.addCondition(c);
+				win.document.documentElement.acceptDialog();
+			});
+			yield zp.editSelectedCollection();
+			yield promise;
+			var conditions = search.getConditions();
+			assert.lengthOf(Object.keys(conditions), 3);
+		});
+		
+		it("should edit a saved search in a group", function* () {
+			var group = yield getGroup();
+			var search = yield createDataObject('search', { libraryID: group.libraryID });
 			var promise = waitForWindow('chrome://zotero/content/searchDialog.xul', function (win) {
 				let searchBox = win.document.getElementById('search-box');
 				var c = searchBox.search.getCondition(
@@ -429,7 +637,7 @@ describe("ZoteroPane", function() {
 			assert.isOk(settings.default.dateAdded);
 		});
 		
-		it("should restore column visiblity when switching between default and feeds", function* () {
+		it("should restore column visibility when switching between default and feeds", function* () {
 			doc.getElementById('zotero-items-column-dateAdded').setAttribute('hidden', false);
 			var feed = yield createFeed();
 			yield cv.selectLibrary(feed.libraryID);

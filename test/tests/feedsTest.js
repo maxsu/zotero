@@ -56,7 +56,8 @@ describe("Zotero.Feeds", function () {
 					url,
 					name: Zotero.Utilities.randomString(),
 					refreshInterval: 5,
-					cleanupAfter: 3,
+					cleanupReadAfter: 3,
+					cleanupUnreadAfter: 30,
 				};
 				if (i == 0) {
 					existingFeedURL = url;
@@ -165,7 +166,7 @@ describe("Zotero.Feeds", function () {
 		before(function* () {
 			yield clearFeeds();
 		
-			sinon.stub(Zotero.Feeds, 'scheduleNextFeedCheck');
+			sinon.stub(Zotero.Feeds, 'scheduleNextFeedCheck').resolves();
 			_updateFeed = sinon.stub(Zotero.Feed.prototype, '_updateFeed').resolves();
 			let url = getTestDataUrl("feed.rss");
 			

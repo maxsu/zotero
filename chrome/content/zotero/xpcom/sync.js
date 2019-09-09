@@ -181,7 +181,7 @@ Zotero.Sync.Server = new function () {
 					if (ids) {
 						var items = Zotero.Items.get(ids);
 						var rolledBack = false;
-						for each(var item in items) {
+						for (let item of items) {
 							var file = item.getFile();
 							if (!file) {
 								continue;
@@ -286,40 +286,6 @@ Zotero.Sync.Server = new function () {
 					}, 1);
 					break;
 				
-				case 'NOTE_TOO_LONG':
-					if (!Zotero.Sync.Runner.background) {
-						let libraryKey = xmlhttp.responseXML.firstChild.getElementsByTagName('item');
-						if (libraryKey.length) {
-							let [libraryID, key] = libraryKey[0].textContent.split('/');
-							if (Zotero.Libraries.getType(libraryID) == 'user') {
-								libraryID = null;
-							}
-							let item = Zotero.Items.getByLibraryAndKey(libraryID, key);
-							if (item) {
-								let msg = xmlhttp.responseXML.firstChild.getElementsByTagName('error')[0].textContent;
-								let e = new Zotero.Error(
-									msg,
-									0,
-									{
-										dialogButtonText: Zotero.getString('pane.items.showItemInLibrary'),
-										dialogButtonCallback: function () {
-											var wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
-												.getService(Components.interfaces.nsIWindowMediator);
-											var win = wm.getMostRecentWindow("navigator:browser");
-											win.ZoteroPane.selectItem(item.id);
-										}
-									}
-								);
-								_error(e);
-							}
-							else {
-								let msg = "Long note " + libraryKey[0].textContent + " not found!";
-								Zotero.debug(msg, 1);
-								Components.utils.reportError(msg);
-							}
-						}
-					}
-					break;
 				
 				// We can't reproduce it, but we can fix it
 				case 'WRONG_LIBRARY_TAG_ITEM':
@@ -563,7 +529,7 @@ Zotero.Sync.Server.Data = new function() {
 			introMsg += Zotero.getString('sync.conflict.tag.addedToLocal');
 		}
 		var itemText = [];
-		for each(var id in addedItemIDs) {
+		for (let id of addedItemIDs) {
 			var item = Zotero.Items.get(id);
 			var title = item.getField('title');
 			var text = " - " + title;

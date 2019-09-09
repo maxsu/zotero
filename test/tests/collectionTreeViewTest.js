@@ -18,20 +18,24 @@ describe("Zotero.CollectionTreeView", function() {
 	});
 	
 	describe("#refresh()", function () {
-		it("should show Duplicate Items and Unfiled Items by default", function* () {
+		it("should show Duplicate Items and Unfiled Items by default and shouldn't show Retracted Items", function* () {
 			Zotero.Prefs.clear('duplicateLibraries');
 			Zotero.Prefs.clear('unfiledLibraries');
+			Zotero.Prefs.clear('retractedLibraries');
 			yield cv.refresh();
 			assert.ok(cv.getRowIndexByID("D" + userLibraryID));
 			assert.ok(cv.getRowIndexByID("U" + userLibraryID));
+			assert.isFalse(cv.getRowIndexByID("R" + userLibraryID));
 		});
 		
-		it("shouldn't show Duplicate Items and Unfiled Items if hidden", function* () {
+		it("shouldn't show virtual collections if hidden", function* () {
 			Zotero.Prefs.set('duplicateLibraries', `{"${userLibraryID}": false}`);
 			Zotero.Prefs.set('unfiledLibraries', `{"${userLibraryID}": false}`);
+			Zotero.Prefs.set('retractedLibraries', `{"${userLibraryID}": false}`);
 			yield cv.refresh();
 			assert.isFalse(cv.getRowIndexByID("D" + userLibraryID));
 			assert.isFalse(cv.getRowIndexByID("U" + userLibraryID));
+			assert.isFalse(cv.getRowIndexByID("R" + userLibraryID));
 		});
 		
 		it("should maintain open state of group", function* () {
@@ -61,6 +65,14 @@ describe("Zotero.CollectionTreeView", function() {
 			// Group open states shouldn't have changed
 			assert.isTrue(cv.isContainerOpen(group1Row));
 			assert.isFalse(cv.isContainerOpen(group2Row));
+		});
+		
+		it("should update associated item tree view", function* () {
+			var collection = yield createDataObject('collection');
+			var item = yield createDataObject('item', { collections: [collection.id] });
+			yield cv.reload();
+			yield cv.selectCollection(collection.id);
+			yield cv.selectItem(item.id);
 		});
 	});
 	
@@ -326,6 +338,29 @@ describe("Zotero.CollectionTreeView", function() {
 		})
 		
 		
+		it("should add collection after parent's subcollection and before non-sibling", function* () {
+			var c0 = yield createDataObject('collection', { name: "Test" });
+			var rootRow = cv.getRowIndexByID(c0.treeViewID);
+			
+			var c1 = yield createDataObject('collection', { name: "1", parentID: c0.id });
+			var c2 = yield createDataObject('collection', { name: "2", parentID: c0.id });
+			var c3 = yield createDataObject('collection', { name: "3", parentID: c1.id });
+			var c4 = yield createDataObject('collection', { name: "4", parentID: c3.id });
+			var c5 = yield createDataObject('collection', { name: "5", parentID: c1.id });
+			
+			assert.equal(cv.getRowIndexByID(c1.treeViewID), rootRow + 1);
+			
+			assert.isAbove(cv.getRowIndexByID(c1.treeViewID), cv.getRowIndexByID(c0.treeViewID));
+			assert.isAbove(cv.getRowIndexByID(c2.treeViewID), cv.getRowIndexByID(c0.treeViewID));
+			
+			assert.isAbove(cv.getRowIndexByID(c3.treeViewID), cv.getRowIndexByID(c1.treeViewID));
+			assert.isAbove(cv.getRowIndexByID(c5.treeViewID), cv.getRowIndexByID(c1.treeViewID));
+			assert.isBelow(cv.getRowIndexByID(c5.treeViewID), cv.getRowIndexByID(c2.treeViewID));
+			
+			assert.equal(cv.getRowIndexByID(c4.treeViewID), cv.getRowIndexByID(c3.treeViewID) + 1);
+		});
+		
+		
 		it("should add multiple collections", function* () {
 			var col1, col2;
 			yield Zotero.DB.executeTransaction(function* () {
@@ -409,6 +444,10 @@ describe("Zotero.CollectionTreeView", function() {
 			// Group, collections, Duplicates, Unfiled, and trash
 			assert.equal(cv.rowCount, originalRowCount + 9);
 			
+			// Select group
+			yield cv.selectLibrary(group.libraryID);
+			yield waitForItemsLoad(win);
+			
 			var spy = sinon.spy(cv, "refresh");
 			try {
 				yield group.eraseTx();
@@ -424,9 +463,19 @@ describe("Zotero.CollectionTreeView", function() {
 		
 		it("should select a new feed", function* () {
 			var feed = yield createFeed();
-			// Library should still be selected
+			// Feed should be selected
 			assert.equal(cv.getSelectedLibraryID(), feed.id);
-		})
+		});
+		
+		it("shouldn't select a new feed with skipSelect: true", function* () {
+			var feed = yield createFeed({
+				saveOptions: {
+					skipSelect: true
+				}
+			});
+			// Library should still be selected
+			assert.equal(cv.getSelectedLibraryID(), userLibraryID);
+		});
 		
 		it("should remove deleted feed", function* () {
 			var feed = yield createFeed();
@@ -436,8 +485,30 @@ describe("Zotero.CollectionTreeView", function() {
 			yield win.ZoteroPane.deleteSelectedCollection();
 			assert.isFalse(cv.getRowIndexByID(id))
 		})
-		
-	})
+	});
+	
+	describe("#selectItem()", function () {
+		it("should switch to library root if item isn't in collection", async function () {
+			var item = await createDataObject('item');
+			var collection = await createDataObject('collection');
+			await cv.selectItem(item.id);
+			await waitForItemsLoad(win);
+			assert.equal(cv.selection.currentIndex, 0);
+			assert.sameMembers(zp.itemsView.getSelectedItems(true), [item.id]);
+		});
+	});
+	
+	describe("#selectItems()", function () {
+		it("should switch to library root if at least one item isn't in the current collection", async function () {
+			var collection = await createDataObject('collection');
+			var item1 = await createDataObject('item', { collections: [collection.id] });
+			var item2 = await createDataObject('item');
+			await cv.selectItems([item1.id, item2.id]);
+			await waitForItemsLoad(win);
+			assert.equal(cv.selection.currentIndex, 0);
+			assert.sameMembers(zp.itemsView.getSelectedItems(true), [item1.id, item2.id]);
+		});
+	});
 	
 	describe("#drop()", function () {
 		/**
@@ -450,7 +521,7 @@ describe("Zotero.CollectionTreeView", function() {
 		 *     value returned after the drag. Otherwise, an 'add' event will be waited for, and
 		 *     an object with 'ids' and 'extraData' will be returned.
 		 */
-		var drop = Zotero.Promise.coroutine(function* (objectType, targetRow, ids, promise) {
+		var drop = Zotero.Promise.coroutine(function* (objectType, targetRow, ids, promise, action = 'copy') {
 			if (typeof targetRow == 'string') {
 				var row = cv.getRowIndexByID(targetRow);
 				var orient = 0;
@@ -465,9 +536,9 @@ describe("Zotero.CollectionTreeView", function() {
 				promise = waitForNotifierEvent("add", objectType);
 			}
 			yield cv.drop(row, orient, {
-				dropEffect: 'copy',
-				effectAllowed: 'copy',
-				mozSourceNode: win.document.getElementById(`zotero-${objectType}s-tree`),
+				dropEffect: action,
+				effectAllowed: action,
+				mozSourceNode: win.document.getElementById(`zotero-${objectType}s-tree`).treeBoxObject.treeBody,
 				types: {
 					contains: function (type) {
 						return type == `zotero/${objectType}`;
@@ -546,6 +617,199 @@ describe("Zotero.CollectionTreeView", function() {
 				assert.equal(treeRow.ref.id, item.id);
 			})
 			
+			it("should move an item from one collection to another", function* () {
+				var collection1 = yield createDataObject('collection');
+				yield waitForItemsLoad(win);
+				var collection2 = yield createDataObject('collection', false, { skipSelect: true });
+				var item = yield createDataObject('item', { collections: [collection1.id] });
+				
+				// Add observer to wait for collection add
+				var deferred = Zotero.Promise.defer();
+				var observerID = Zotero.Notifier.registerObserver({
+					notify: function (event, type, ids, extraData) {
+						if (type == 'collection-item' && event == 'add'
+								&& ids[0] == collection2.id + "-" + item.id) {
+							setTimeout(function () {
+								deferred.resolve();
+							});
+						}
+					}
+				}, 'collection-item', 'test');
+				
+				yield drop('item', 'C' + collection2.id, [item.id], deferred.promise, 'move');
+				
+				Zotero.Notifier.unregisterObserver(observerID);
+				
+				// Source collection should be empty
+				assert.equal(zp.itemsView.rowCount, 0);
+				
+				yield cv.selectCollection(collection2.id);
+				yield waitForItemsLoad(win);
+				
+				// Target collection should have item
+				assert.equal(zp.itemsView.rowCount, 1);
+				var treeRow = zp.itemsView.getRow(0);
+				assert.equal(treeRow.ref.id, item.id);
+			});
+			
+			describe("My Publications", function () {
+				it("should add an item to My Publications", function* () {
+					// Remove other items in My Publications
+					var s = new Zotero.Search();
+					s.addCondition('libraryID', 'is', Zotero.Libraries.userLibraryID);
+					s.addCondition('publications', 'true');
+					var ids = yield s.search();
+					yield Zotero.Items.erase(ids);
+					
+					var item = yield createDataObject('item', false, { skipSelect: true });
+					var libraryID = item.libraryID;
+					
+					var stub = sinon.stub(zp, "showPublicationsWizard")
+						.returns({
+							includeNotes: false,
+							includeFiles: false,
+							keepRights: true
+						});
+					
+					// Add observer to wait for item modification
+					var deferred = Zotero.Promise.defer();
+					var observerID = Zotero.Notifier.registerObserver({
+						notify: function (event, type, ids, extraData) {
+							if (type == 'item' && event == 'modify' && ids[0] == item.id) {
+								setTimeout(function () {
+									deferred.resolve();
+								});
+							}
+						}
+					}, 'item', 'test');
+					
+					yield drop('item', 'P' + libraryID, [item.id], deferred.promise);
+					
+					Zotero.Notifier.unregisterObserver(observerID);
+					stub.restore();
+					
+					// Select publications and check for item
+					yield cv.selectByID("P" + libraryID);
+					yield waitForItemsLoad(win);
+					var itemsView = win.ZoteroPane.itemsView
+					assert.equal(itemsView.rowCount, 1);
+					var treeRow = itemsView.getRow(0);
+					assert.equal(treeRow.ref.id, item.id);
+				});
+				
+				it("should add an item with a file attachment to My Publications", function* () {
+					var item = yield createDataObject('item', false, { skipSelect: true });
+					var attachment = yield importFileAttachment('test.png', { parentItemID: item.id });
+					var libraryID = item.libraryID;
+					
+					var stub = sinon.stub(zp, "showPublicationsWizard")
+						.returns({
+							includeNotes: false,
+							includeFiles: true,
+							keepRights: true
+						});
+					
+					// Add observer to wait for modify
+					var deferred = Zotero.Promise.defer();
+					var observerID = Zotero.Notifier.registerObserver({
+						notify: function (event, type, ids, extraData) {
+							if (type == 'item' && event == 'modify' && ids[0] == item.id) {
+								setTimeout(function () {
+									deferred.resolve();
+								});
+							}
+						}
+					}, 'item', 'test');
+					
+					yield drop('item', 'P' + libraryID, [item.id], deferred.promise);
+					
+					Zotero.Notifier.unregisterObserver(observerID);
+					stub.restore();
+					
+					assert.isTrue(item.inPublications);
+					// File attachment should be in My Publications
+					assert.isTrue(attachment.inPublications);
+				});
+				
+				it("should add an item with a linked URL attachment to My Publications", function* () {
+					var item = yield createDataObject('item', false, { skipSelect: true });
+					var attachment = yield Zotero.Attachments.linkFromURL({
+						parentItemID: item.id,
+						title: 'Test',
+						url: 'http://127.0.0.1/',
+						contentType: 'text/html'
+					});
+					var libraryID = item.libraryID;
+					
+					var stub = sinon.stub(zp, "showPublicationsWizard")
+						.returns({
+							includeNotes: false,
+							includeFiles: false,
+							keepRights: true
+						});
+					
+					// Add observer to wait for modify
+					var deferred = Zotero.Promise.defer();
+					var observerID = Zotero.Notifier.registerObserver({
+						notify: function (event, type, ids, extraData) {
+							if (type == 'item' && event == 'modify' && ids[0] == item.id) {
+								setTimeout(function () {
+									deferred.resolve();
+								});
+							}
+						}
+					}, 'item', 'test');
+					
+					yield drop('item', 'P' + libraryID, [item.id], deferred.promise);
+					
+					Zotero.Notifier.unregisterObserver(observerID);
+					stub.restore();
+					
+					assert.isTrue(item.inPublications);
+					// Link attachment should be in My Publications
+					assert.isTrue(attachment.inPublications);
+				});
+				
+				it("shouldn't add linked file attachment to My Publications", function* () {
+					var item = yield createDataObject('item', false, { skipSelect: true });
+					var attachment = yield Zotero.Attachments.linkFromFile({
+						parentItemID: item.id,
+						title: 'Test',
+						file: OS.Path.join(getTestDataDirectory().path, 'test.png'),
+						contentType: 'image/png'
+					});
+					var libraryID = item.libraryID;
+					
+					var stub = sinon.stub(zp, "showPublicationsWizard")
+						.returns({
+							includeNotes: false,
+							includeFiles: false,
+							keepRights: true
+						});
+					
+					// Add observer to wait for modify
+					var deferred = Zotero.Promise.defer();
+					var observerID = Zotero.Notifier.registerObserver({
+						notify: function (event, type, ids, extraData) {
+							if (type == 'item' && event == 'modify' && ids[0] == item.id) {
+								setTimeout(function () {
+									deferred.resolve();
+								});
+							}
+						}
+					}, 'item', 'test');
+					
+					yield drop('item', 'P' + libraryID, [item.id], deferred.promise);
+					
+					Zotero.Notifier.unregisterObserver(observerID);
+					stub.restore();
+					
+					assert.isTrue(item.inPublications);
+					// Linked URL attachment shouldn't be in My Publications
+					assert.isFalse(attachment.inPublications);
+				});
+			});
+			
 			it("should copy an item with an attachment to a group", function* () {
 				var group = yield createGroup();
 				
@@ -569,7 +833,7 @@ describe("Zotero.CollectionTreeView", function() {
 				assert.equal(treeRow.ref.libraryID, group.libraryID);
 				assert.equal(treeRow.ref.id, ids[0]);
 				// New item should link back to original
-				var linked = item.getLinkedItem(group.libraryID);
+				var linked = yield item.getLinkedItem(group.libraryID);
 				assert.equal(linked.id, treeRow.ref.id);
 				
 				// Check attachment
@@ -579,7 +843,7 @@ describe("Zotero.CollectionTreeView", function() {
 				treeRow = itemsView.getRow(1);
 				assert.equal(treeRow.ref.id, ids[1]);
 				// New attachment should link back to original
-				linked = attachment.getLinkedItem(group.libraryID);
+				linked = yield attachment.getLinkedItem(group.libraryID);
 				assert.equal(linked.id, treeRow.ref.id);
 				
 				return group.eraseTx();
@@ -611,7 +875,7 @@ describe("Zotero.CollectionTreeView", function() {
 				var item = yield createDataObject('item', false, { skipSelect: true });
 				yield drop('item', 'L' + group.libraryID, [item.id]);
 				
-				var droppedItem = item.getLinkedItem(group.libraryID);
+				var droppedItem = yield item.getLinkedItem(group.libraryID);
 				droppedItem.setCollections([collection.id]);
 				droppedItem.deleted = true;
 				yield droppedItem.saveTx();
@@ -810,6 +1074,53 @@ describe("Zotero.CollectionTreeView", function() {
 				assert.equal(newColIndexG, newColIndexH - 1);
 				
 				// TODO: Check deeper subcollection open states
+			})
+			
+			it("should copy a collection and its subcollection to another library", async function () {
+				var group = await createGroup();
+				
+				var collectionA = await createDataObject('collection', { name: "A" }, { skipSelect: true });
+				var collectionB = await createDataObject('collection', { name: "B", parentKey: collectionA.key });
+				var itemA = await createDataObject('item', { collections: [collectionA.key] }, { skipSelect: true });
+				var itemB = await createDataObject('item', { collections: [collectionB.key] }, { skipSelect: true });
+				
+				await cv.selectCollection(collectionA.id);
+				
+				// Add observer to wait for collection add
+				var deferred = Zotero.Promise.defer();
+				var observerID = Zotero.Notifier.registerObserver({
+					notify: function (event, type, ids, extraData) {
+						if (type == 'collection' && event == 'modify' && ids.includes(collectionB.id)) {
+							setTimeout(function () {
+								deferred.resolve();
+							}, 50);
+						}
+					}
+				}, 'collection', 'test');
+				
+				await drop(
+					'collection',
+					'L' + group.libraryID,
+					[collectionA.id],
+					deferred.promise
+				);
+				
+				Zotero.Notifier.unregisterObserver(observerID);
+				
+				var pred = Zotero.Relations.linkedObjectPredicate;
+				var newCollectionA = await Zotero.URI.getURICollection(collectionA.getRelations()[pred][0]);
+				var newCollectionB = await Zotero.URI.getURICollection(collectionB.getRelations()[pred][0]);
+				var newItemA = await Zotero.URI.getURIItem(itemA.getRelations()[pred][0]);
+				var newItemB = await Zotero.URI.getURIItem(itemB.getRelations()[pred][0]);
+				assert.equal(newCollectionA.libraryID, group.libraryID);
+				assert.equal(newCollectionB.libraryID, group.libraryID);
+				assert.equal(newCollectionB.parentID, newCollectionA.id);
+				assert.equal(newItemA.libraryID, group.libraryID);
+				assert.equal(newItemB.libraryID, group.libraryID);
+				assert.isTrue(newCollectionA.hasItem(newItemA));
+				assert.isTrue(newCollectionB.hasItem(newItemB));
+				assert.isFalse(newCollectionA.hasItem(newItemB));
+				assert.isFalse(newCollectionB.hasItem(newItemA));
 			})
 		})
 

@@ -7,13 +7,9 @@ var lastJumpToYearValue;
  */
 function initLocaleBundle() {
 	var src = 'chrome://zotero/locale/timeline.properties';
-	var localeService = Components.classes['@mozilla.org/intl/nslocaleservice;1']
-		.getService(Components.interfaces.nsILocaleService);
-	var appLocale = localeService.getApplicationLocale();
-	
 	var stringBundleService = Components.classes["@mozilla.org/intl/stringbundle;1"]
-			.getService(Components.interfaces.nsIStringBundleService);
-	return stringBundleService.createBundle(src, appLocale);
+		.getService(Components.interfaces.nsIStringBundleService);
+	return stringBundleService.createBundle(src);
 }
 
 /*

@@ -219,7 +219,6 @@ Zotero.CreatorTypes = new function() {
 	Zotero.CachedTypes.apply(this, arguments);
 	this.constructor.prototype = new Zotero.CachedTypes();
 	
-	this.getTypesForItemType = getTypesForItemType;
 	this.isValidForItemType = isValidForItemType;
 	
 	this._typeDesc = 'creator type';
@@ -237,11 +236,8 @@ Zotero.CreatorTypes = new function() {
 	this.init = Zotero.Promise.coroutine(function* () {
 		yield this.constructor.prototype.init.apply(this);
 		
-		var sql = "SELECT itemTypeID, creatorTypeID AS id, creatorType AS name "
-			+ "FROM itemTypeCreatorTypes NATURAL JOIN creatorTypes "
-			// DEBUG: sort needs to be on localized strings in itemPane.js
-			// (though still put primary field at top)
-			+ "ORDER BY primaryField=1 DESC, name";
+		var sql = "SELECT itemTypeID, creatorTypeID AS id, creatorType AS name, primaryField "
+			+ "FROM itemTypeCreatorTypes NATURAL JOIN creatorTypes";
 		var rows = yield Zotero.DB.queryAsync(sql);
 		for (let i=0; i<rows.length; i++) {
 			let row = rows[i];
@@ -251,7 +247,20 @@ Zotero.CreatorTypes = new function() {
 			}
 			_creatorTypesByItemType[itemTypeID].push({
 				id: row.id,
-				name: row.name
+				name: row.name,
+				primaryField: row.primaryField,
+				localizedName: this.getLocalizedString(row.name)
+			});
+		}
+		// Sort primary field first, then by localized name
+		for (let itemTypeID in _creatorTypesByItemType) {
+			_creatorTypesByItemType[itemTypeID].sort((a, b) => {
+				if (a.primaryField != b.primaryField) return b.primaryField - a.primaryField;
+				return Zotero.localeCompare(a.localizedName, b.localizedName);
+			});
+			_creatorTypesByItemType[itemTypeID].forEach((x) => {
+				delete x.primaryField;
+				delete x.localizedName;
 			});
 		}
 		
@@ -267,11 +276,10 @@ Zotero.CreatorTypes = new function() {
 	});
 	
 	
-	function getTypesForItemType(itemTypeID) {
+	this.getTypesForItemType = function (itemTypeID) {
 		if (!_creatorTypesByItemType[itemTypeID]) {
-			throw new Error("Creator types not loaded for itemTypeID " + itemTypeID);
+			return [];
 		}
-		
 		return _creatorTypesByItemType[itemTypeID];
 	}
 	
@@ -283,7 +291,7 @@ Zotero.CreatorTypes = new function() {
 		
 		var valid = false;
 		var types = this.getTypesForItemType(itemTypeID);
-		for each(var type in types) {
+		for (let type of types) {
 			if (type.id == creatorTypeID) {
 				valid = true;
 				break;
@@ -345,6 +353,8 @@ Zotero.ItemTypes = new function() {
 	var _secondaryTypes;
 	var _hiddenTypes;
 	
+	var _numPrimary = 5;
+	
 	var _customImages = {};
 	var _customLabels = {};
 	
@@ -352,39 +362,9 @@ Zotero.ItemTypes = new function() {
 	this.init = Zotero.Promise.coroutine(function* () {
 		yield this.constructor.prototype.init.apply(this);
 		
-		// Primary types
-		var limit = 5;
-		
 		// TODO: get rid of ' AND itemTypeID!=5' and just remove display=2
 		// from magazineArticle in system.sql
-		var sql = 'WHERE (display=2 AND itemTypeID!=5) ';
-		
-		var mru = Zotero.Prefs.get('newItemTypeMRU');
-		if (mru) {
-			var params = [];
-			mru = mru.split(',').slice(0, limit);
-			for (var i=0, len=mru.length; i<len; i++) {
-				var id = parseInt(mru[i]);
-				if (!isNaN(id) && id != 13) { // ignore 'webpage' item type
-					params.push(id);
-				}
-			}
-			if (params.length) {
-				sql += 'OR id IN '
-						+ '(' + params.map(function () '?').join() + ') '
-						+ 'ORDER BY id NOT IN '
-						+ '(' + params.map(function () '?').join() + ') ';
-				params = params.concat(params);
-			}
-			else {
-				params = false;
-			}
-		}
-		else {
-			params = false;
-		}
-		sql += 'LIMIT ' + limit;
-		_primaryTypes = yield this._getTypesFromDB(sql, params);
+		_primaryTypes = yield this._getTypesFromDB('WHERE (display=2 AND itemTypeID!=5) LIMIT ' + _numPrimary);
 		
 		// Secondary types
 		_secondaryTypes = yield this._getTypesFromDB('WHERE display IN (1,2)');
@@ -408,6 +388,26 @@ Zotero.ItemTypes = new function() {
 		if (!_primaryTypes) {
 			throw new Zotero.Exception.UnloadedDataException("Primary item type data not yet loaded");
 		}
+		
+		var mru = Zotero.Prefs.get('newItemTypeMRU');
+		if (mru && mru.length) {
+			// Get types from the MRU list
+			mru = new Set(
+				mru.split(',')
+				.slice(0, _numPrimary)
+				.map(id => parseInt(id))
+				// Ignore 'webpage' item type
+				.filter(id => !isNaN(id) && id != 13)
+			);
+			
+			// Add types from defaults until we reach our limit
+			for (let i = 0; i < _primaryTypes.length && mru.size < _numPrimary; i++) {
+				mru.add(_primaryTypes[i].id);
+			}
+			
+			return Array.from(mru).map(id => ({ id, name: this.getName(id) }));
+		}
+		
 		return _primaryTypes;
 	}
 
@@ -459,44 +459,45 @@ Zotero.ItemTypes = new function() {
 			
 			// HiDPI images available
 			case 'attachment-link':
+			case 'attachment-pdf':
+			case 'attachment-pdf-link':
+			case 'attachment-snapshot':
 			case 'attachment-web-link':
 			case 'artwork':
 			case 'audioRecording':
 			case 'bill':
+			case 'blogPost':
 			case 'book':
 			case 'bookSection':
+			case 'case':
 			case 'computerProgram':
+			case 'conferencePaper':
+			case 'dictionaryEntry':
+			case 'email':
+			case 'encyclopediaArticle':
 			case 'film':
 			case 'forumPost':
+			case 'hearing':
 			case 'instantMessage':
 			case 'interview':
 			case 'journalArticle':
 			case 'letter':
 			case 'magazineArticle':
+			case 'manuscript':
 			case 'newspaperArticle':
 			case 'note':
+			case 'patent':
+			case 'presentation':
 			case 'report':
+			case 'statute':
+			case 'thesis':
 			case 'webpage':
 				return "chrome://zotero/skin/treeitem-" + itemType + suffix + ".png";
 			
 			// No HiDPI images available
-			case 'attachment-snapshot':
-			case 'attachment-pdf':
-			case 'blogPost':
-			case 'case':
-			case 'conferencePaper':
-			case 'dictionaryEntry':
-			case 'email':
-			case 'encyclopediaArticle':
-			case 'hearing':
-			case 'manuscript':
 			case 'map':
-			case 'patent':
 			case 'podcast':
-			case 'presentation':
 			case 'radioBroadcast':
-			case 'statute':
-			case 'thesis':
 			case 'tvBroadcast':
 			case 'videoRecording':
 				return "chrome://zotero/skin/treeitem-" + itemType + ".png";

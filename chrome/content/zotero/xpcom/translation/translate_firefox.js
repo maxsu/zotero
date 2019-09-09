@@ -43,6 +43,8 @@ Zotero.Translate.DOMWrapper = new function() {
 	/*
 	 * BEGIN SPECIAL POWERS WRAPPING CODE
 	 * https://dxr.mozilla.org/mozilla-central/source/testing/specialpowers/content/specialpowersAPI.js
+	 *
+	 * Includes modifications by Zotero to support overrides
 	 */
 	function isWrappable(x) {
 		if (typeof x === "object")
@@ -51,7 +53,7 @@ Zotero.Translate.DOMWrapper = new function() {
 	};
 	
 	function isWrapper(x) {
-		return isWrappable(x) && (typeof x.__wrappedObject !== "undefined");
+		return isWrappable(x) && (typeof x.SpecialPowers_wrappedObject !== "undefined");
 	};
 	
 	function unwrapIfWrapped(x) {
@@ -101,7 +103,7 @@ Zotero.Translate.DOMWrapper = new function() {
 		return obj;
 	}
 	
-	// We can't call apply() directy on Xray-wrapped functions, so we have to be
+	// We can't call apply() directly on Xray-wrapped functions, so we have to be
 	// clever.
 	function doApply(fun, invocant, args) {
 		// We implement Xrays to pure JS [[Object]] instances that filter out tricky
@@ -127,7 +129,7 @@ Zotero.Translate.DOMWrapper = new function() {
 	
 		// No double wrapping.
 		if (isWrapper(obj))
-			throw "Trying to double-wrap object!";
+			throw new Error("Trying to double-wrap object!");
 	
 		let dummy;
 		if (typeof obj === "function")
@@ -149,9 +151,9 @@ Zotero.Translate.DOMWrapper = new function() {
 	
 		// If we have a wrappable type, make sure it's wrapped.
 		if (!isWrapper(x))
-			throw "Trying to unwrap a non-wrapped object!";
+			throw new Error("Trying to unwrap a non-wrapped object!");
 	
-		var obj = x.__wrappedObject;
+		var obj = x.SpecialPowers_wrappedObject;
 		// unwrapped.
 		return obj;
 	};
@@ -177,7 +179,7 @@ Zotero.Translate.DOMWrapper = new function() {
 	
 	function SpecialPowersHandler(wrappedObject, overrides) {
 		this.wrappedObject = wrappedObject;
-		this.overrides = overrides ? overrides: {};
+		this.overrides = overrides ? overrides : {};
 	}
 	
 	SpecialPowersHandler.prototype = {
@@ -209,7 +211,7 @@ Zotero.Translate.DOMWrapper = new function() {
 		},
 	
 		has(target, prop) {
-			if (prop === "__wrappedObject")
+			if (prop === "SpecialPowers_wrappedObject")
 				return true;
 	
 			if (this.overrides[prop] !== undefined) {
@@ -220,10 +222,10 @@ Zotero.Translate.DOMWrapper = new function() {
 		},
 	
 		get(target, prop, receiver) {
-			if (prop === "__wrappedObject")
+			if (prop === "SpecialPowers_wrappedObject")
 				return this.wrappedObject;
 			
-			if (prop == "__wrapperOverrides") {
+			if (prop == "SpecialPowers_wrapperOverrides") {
 				return this.overrides;
 			}
 			
@@ -236,7 +238,7 @@ Zotero.Translate.DOMWrapper = new function() {
 		},
 	
 		set(target, prop, val, receiver) {
-			if (prop === "__wrappedObject")
+			if (prop === "SpecialPowers_wrappedObject")
 				return false;
 	
 			let obj = waiveXraysIfAppropriate(this.wrappedObject, prop);
@@ -244,34 +246,33 @@ Zotero.Translate.DOMWrapper = new function() {
 		},
 	
 		delete(target, prop) {
-			if (prop === "__wrappedObject")
+			if (prop === "SpecialPowers_wrappedObject")
 				return false;
 	
 			return Reflect.deleteProperty(this.wrappedObject, prop);
 		},
 	
 		defineProperty(target, prop, descriptor) {
-			throw "Can't call defineProperty on SpecialPowers wrapped object";
+			throw new Error("Can't call defineProperty on SpecialPowers wrapped object");
 		},
 	
 		getOwnPropertyDescriptor(target, prop) {
 			// Handle our special API.
-			if (prop === "__wrappedObject") {
+			if (prop === "SpecialPowers_wrappedObject") {
 				return { value: this.wrappedObject, writeable: true,
 								 configurable: true, enumerable: false };
 			}
-			if (prop == "__wrapperOverrides") {
+			
+			if (prop == "SpecialPowers_wrapperOverrides") {
 				return { value: this.overrides, writeable: false, configurable: false, enumerable: false };
 			}
-			// Handle __exposedProps__.
 			if (prop == "__exposedProps__") {
 				return { value: ExposedPropsWaiver, writable: false, configurable: false, enumerable: false };
 			}
-	
 			if (prop in this.overrides) {
-				return this.overrides[prop];
+				return { value: this.overrides[prop], writeable: false, configurable: true, enumerable: true };
 			}
-			
+	
 			let obj = waiveXraysIfAppropriate(this.wrappedObject, prop);
 			let desc = Reflect.getOwnPropertyDescriptor(obj, prop);
 	
@@ -298,7 +299,7 @@ Zotero.Translate.DOMWrapper = new function() {
 		ownKeys(target) {
 			// Insert our special API. It's not enumerable, but ownKeys()
 			// includes non-enumerable properties.
-			let props = ['__wrappedObject'];
+			let props = ['SpecialPowers_wrappedObject'];
 	
 			// Do the normal thing.
 			let flt = (a) => !props.includes(a);
@@ -315,7 +316,7 @@ Zotero.Translate.DOMWrapper = new function() {
 		},
 	
 		preventExtensions(target) {
-			throw "Can't call preventExtensions on SpecialPowers wrapped object";
+			throw new Error("Can't call preventExtensions on SpecialPowers wrapped object");
 		}
 	};
 	
@@ -362,258 +363,88 @@ Zotero.Translate.DOMWrapper = new function() {
 
 /**
  * @class Manages the translator sandbox
- * @param {Zotero.Translate} translate
+ * @param {Translate} translate
  * @param {String|window} sandboxLocation
  */
 Zotero.Translate.SandboxManager = function(sandboxLocation) {
-	// sandboxLocation = Components.classes["@mozilla.org/systemprincipal;1"].createInstance(Components.interfaces.nsIPrincipal);
-	var sandbox = this.sandbox = new Components.utils.Sandbox(sandboxLocation, {wantComponents:false, wantGlobalProperties:["XMLHttpRequest"]});
-	this.sandbox.Zotero = {};
-	
-	// import functions missing from global scope into Fx sandbox
-	this.sandbox.XPathResult = Components.interfaces.nsIDOMXPathResult;
-	if(typeof sandboxLocation === "object" && "DOMParser" in sandboxLocation) {
-		this.sandbox.DOMParser = sandboxLocation.DOMParser;
-	} else {
-		this.sandbox.DOMParser = function() {
-			var obj = new sandbox.Object();
-			var wrappedObj = obj.wrappedJSObject || obj;
-			wrappedObj.__exposedProps__ = {"parseFromString":"r"};
-			wrappedObj.parseFromString = function(str, contentType) {
-				var xhr = new sandbox.XMLHttpRequest();
-				xhr.open("GET", "data:"+contentType+";charset=utf-8,"+encodeURIComponent(str), false);
-				xhr.send();
-				if (!xhr.responseXML) throw new Error("error parsing XML");
-				return xhr.responseXML;
-			}
-			return obj;
-		};
-	}
-	this.sandbox.DOMParser.__exposedProps__ = {"prototype":"r"};
-	this.sandbox.DOMParser.prototype = {};
-	this.sandbox.XMLSerializer = function() {
-		var s = Components.classes["@mozilla.org/xmlextras/xmlserializer;1"]
-			.createInstance(Components.interfaces.nsIDOMSerializer);
-		var obj = new sandbox.Object();
-		var wrappedObj = obj.wrappedJSObject || obj;
-		wrappedObj.serializeToString = function(doc) {
-			return s.serializeToString(Zotero.Translate.DOMWrapper.unwrap(doc));
-		};
-		return obj;
+	this.sandbox = {
+		Zotero: {},
+		XPathResult: Components.interfaces.nsIDOMXPathResult,
+		DOMParser: function() {
+			return Components.classes["@mozilla.org/xmlextras/domparser;1"]
+				.createInstance(Components.interfaces.nsIDOMParser);
+		},
+		XMLSerializer: function() {
+			return Components.classes["@mozilla.org/xmlextras/xmlserializer;1"]
+				.createInstance(Components.interfaces.nsIDOMSerializer);
+		}
 	};
-	this.sandbox.XMLSerializer.__exposedProps__ = {"prototype":"r"};
-	this.sandbox.XMLSerializer.prototype = {"__exposedProps__":{"serializeToString":"r"}};
-
-	var expr = "(function(x) { return function() { this.args = arguments; return Function.prototype.apply.call(x, this); }.bind({}); })";
-	this._makeContentForwarder = Components.utils.evalInSandbox(expr, sandbox);
-
-	if (Zotero.platformMajorVersion >= 35) {
-		var _proxy = Components.utils.evalInSandbox('(function (target, x, overrides) {'+
-		'	return new Proxy(x, ProxyHandler(target, overrides));'+
-		'})', sandbox);
-		var wrap = this.wrap = function(target, x, overrides) {
-			if (target === null || (typeof target !== "object" && typeof target !== "function")) return target;
-			if (!x) x = new sandbox.Object();
-			return _proxy(target, x, overrides);
-		};
-		var me = this;
-		sandbox.ProxyHandler = this._makeContentForwarder(function() {
-			var target = (this.args.wrappedJSObject || this.args)[0];
-			var overrides = (this.args.wrappedJSObject || this.args)[1] || {};
-			if(target instanceof Components.interfaces.nsISupports) {
-				target = new XPCNativeWrapper(target);
-			}
-			var ret = new sandbox.Object();
-			var wrappedRet = ret.wrappedJSObject || ret;
-			wrappedRet.has = function(x, prop) {
-				return overrides.hasOwnProperty(prop) || prop in target;
-			};
-			wrappedRet.get = function(x, prop, receiver) {
-				if (prop === "__wrappedObject") return target;
-				if (prop === "__wrapperOverrides") return overrides;
-				if (prop === "__wrappingManager") return me;
-				var y = overrides.hasOwnProperty(prop) ? overrides[prop] : target[prop];
-				if (y === null || (typeof y !== "object" && typeof y !== "function")) return y;
-				return wrap(y, typeof y === "function" ? function() {
-					var args = Array.prototype.slice.apply(arguments);
-					for (var i = 0; i < args.length; i++) {
-						if (typeof args[i] === "object" && args[i] !== null &&
-							args[i].wrappedJSObject && args[i].wrappedJSObject.__wrappedObject)
-							args[i] = new XPCNativeWrapper(args[i].wrappedJSObject.__wrappedObject);
-					}
-					return wrap(y.apply(target, args));
-				} : new sandbox.Object());
-			};
-			wrappedRet.ownKeys = function(x) {
-				return Components.utils.cloneInto(target.getOwnPropertyNames(), sandbox);
-			};
-			wrappedRet.enumerate = function(x) {
-				var y = new sandbox.Array();
-				for (var i in target) y.wrappedJSObject.push(i);
-				return y;
-			};
-			return ret;
-		});
-	} else {
-		this.wrap = Zotero.Translate.DOMWrapper.wrap;
-	}
-}
+};
 
 Zotero.Translate.SandboxManager.prototype = {
 	/**
 	 * Evaluates code in the sandbox
+	 * @param {String} code Code to evaluate
+	 * @param {String[]} functions Functions to import into the sandbox (rather than leaving
+	 *                                 as inner functions)
 	 */
-	"eval":function(code, exported, path) {
-		Components.utils.evalInSandbox(code, this.sandbox, "1.8", path, 1);
+	eval: function(code, functions) {
+		// delete functions to import
+		for (var i in functions) {
+			delete this.sandbox[functions[i]];
+		}
+
+		// Prepend sandbox properties within eval environment (what a mess (1))
+		for (var prop in this.sandbox) {
+			code = 'var ' + prop + ' = this.sandbox.' + prop + ';' + code;
+		}
+
+		// Import inner functions back into the sandbox
+		for (var i in functions) {
+			try {
+				code += 'try{this.sandbox.' + functions[i] + ' = ' + functions[i] + ';}catch(e){}';
+			} catch (e) {
+			}
+		}
+
+		// Eval in a closure
+		(function() {
+			eval(code);
+		}).call(this);
 	},
 	
 	/**
 	 * Imports an object into the sandbox
 	 *
 	 * @param {Object} object Object to be imported (under Zotero)
-	 * @param {*} [passTranslateAsFirstArgument] An argument to pass
-	 *              as the first argument to the function.
-	 * @param {Object} [attachTo] The object to attach `object` to.
-	 *                    Defaults to this.sandbox.Zotero
+	 * @param {Boolean} passTranslateAsFirstArgument Whether the translate instance should be passed
+	 *     as the first argument to the function.
 	 */
-	"importObject":function(object, passAsFirstArgument, attachTo) {
+	importObject: function(object, passAsFirstArgument, attachTo) {
 		if(!attachTo) attachTo = this.sandbox.Zotero;
-		if(attachTo.wrappedJSObject) attachTo = attachTo.wrappedJSObject;
-		var newExposedProps = false, sandbox = this.sandbox, me = this;
-		if(!object.__exposedProps__) newExposedProps = {};
-		for(var key in (newExposedProps ? object : object.__exposedProps__)) {
-			let localKey = key;
-			if(newExposedProps) newExposedProps[localKey] = "r";
-			
-			var type = typeof object[localKey];
-			var isFunction = type === "function";
-			var isObject = typeof object[localKey] === "object";
-			if(isFunction || isObject) {
-				if(isFunction) {
-					if (Zotero.platformMajorVersion >= 33) {
-						attachTo[localKey] = this._makeContentForwarder(function() {
-							var args = Array.prototype.slice.apply(this.args.wrappedJSObject || this.args);
-							for(var i = 0; i<args.length; i++) {
-								// Make sure we keep XPCNativeWrappers
-								if(args[i] instanceof Components.interfaces.nsISupports) {
-									args[i] = new XPCNativeWrapper(args[i]);
-								}
-							}
-							if(passAsFirstArgument) args.unshift(passAsFirstArgument);
-							return me.copyObject(object[localKey].apply(object, args));
-						});
-					} else {
-						attachTo[localKey] = function() {
-							var args = Array.prototype.slice.apply(arguments);
-							if(passAsFirstArgument) args.unshift(passAsFirstArgument);
-							return me.copyObject(object[localKey].apply(object, args));
-						};
-					}
-				} else {
-					attachTo[localKey] = new sandbox.Object();
+		
+		for(var key in (object.__exposedProps__ ? object.__exposedProps__ : object)) {
+			if(Function.prototype[key]) continue;
+			if(typeof object[key] === "function" || typeof object[key] === "object") {
+				// magic closures
+				attachTo[key] = new function() {
+					var fn = object[key];
+					return function() {
+						var args = (passAsFirstArgument ? [passAsFirstArgument] : []);
+						for(var i=0; i<arguments.length; i++) {
+							args.push(arguments[i]);
+						}
+						
+						return fn.apply(object, args);
+					};
 				}
 				
 				// attach members
-				if(!(object instanceof Components.interfaces.nsISupports)) {
-					this.importObject(object[localKey], passAsFirstArgument, attachTo[localKey]);
-				}
+				this.importObject(object[key], passAsFirstArgument ? passAsFirstArgument : null, attachTo[key]);
 			} else {
-				attachTo[localKey] = object[localKey];
+				attachTo[key] = object[key];
 			}
 		}
-
-		if(newExposedProps) {
-			attachTo.__exposedProps__ = newExposedProps;
-		} else {
-			attachTo.__exposedProps__ = object.__exposedProps__;
-		}
-	},
-
-	"_canCopy":function(obj) {
-		if(typeof obj !== "object" || obj === null) return false;
-		if((obj.constructor.name !== "Object" && obj.constructor.name !== "Array") ||
-		   "__exposedProps__" in obj || (obj.wrappedJSObject && obj.wrappedJSObject.__wrappingManager)) {
-			return false;
-		}
-		return true;
-	},
-	
-	/**
-	 * Copies a JavaScript object to this sandbox
-	 * @param {Object} obj
-	 * @return {Object}
-	 */
-	"copyObject":function(obj, wm) {
-		if(!this._canCopy(obj)) return obj;
-		if(!wm) wm = new WeakMap();
-		var obj2 = (obj.constructor.name === "Array" ? this.sandbox.Array() : this.sandbox.Object());
-		var wobj2 = obj2.wrappedJSObject ? obj2.wrappedJSObject : obj2;
-		for(var i in obj) {
-			if(!obj.hasOwnProperty(i)) continue;
-			
-			var prop1 = obj[i];
-			if(this._canCopy(prop1)) {
-				var prop2 = wm.get(prop1);
-				if(prop2 === undefined) {
-					prop2 = this.copyObject(prop1, wm);
-					wm.set(prop1, prop2);
-				}
-				wobj2[i] = prop2;
-			} else {
-				wobj2[i] = prop1;
-			}
-		}
-		return obj2;
-	},
-
-	"newChild":function() {
-		return new Zotero.Translate.ChildSandboxManager(this);
-	}
-}
-
-Zotero.Translate.ChildSandboxManager = function(parent) {
-	this._wrappedSandbox = new parent.sandbox.Object();
-	this._wrappedSandbox.Zotero = new parent.sandbox.Object();
-	this.sandbox = this._wrappedSandbox.wrappedJSObject || this._wrappedSandbox;
-	this._parent = parent;
-}
-Zotero.Translate.ChildSandboxManager.prototype = {
-	"eval":function(code, functions, path) {
-		// eval in sandbox scope
-		if(functions) {
-			for(var i = 0; i < functions.length; i++) {
-				delete this.sandbox[functions[i]];
-			}
-		}
-		this._parent.sandbox._withSandbox = this._wrappedSandbox;
-		Components.utils.evalInSandbox("with(_withSandbox){"+code+"};", this._parent.sandbox, "1.8", path, 1);
-		if(functions) {
-			for(var i = 0; i < functions.length; i++) {
-				try {
-					this._wrappedSandbox[functions[i]] = Components.utils.evalInSandbox(functions[i], this._parent.sandbox);
-				} catch(e) {}
-			}
-		}
-		this._parent.sandbox._withSandbox = undefined;
-	},
-	"importObject":function(object, passAsFirstArgument, attachTo) {
-		if(!attachTo) attachTo = this.sandbox.Zotero;
-		// Zotero.debug(object);
-		// Zotero.debug(attachTo);
-		this._parent.importObject(object, passAsFirstArgument, attachTo);
-		// Zotero.debug(attachTo);
-	},
-	"copyObject":function(obj) {
-		return this._parent.copyObject(obj);
-	},
-	"newChild":function() {
-		return this._parent.newChild();
-	},
-	"_makeContentForwarder":function(f) {
-		return this._parent._makeContentForwarder(f);
-	},
-	"wrap": function (target, x, overrides) {
-		return this._parent.wrap(target, x, overrides);
 	}
 }
 
@@ -798,7 +629,7 @@ Zotero.Translate.IO.Read.prototype = {
 		if(this._rawStream) this._rawStream.close();
 		this._rawStream = Components.classes["@mozilla.org/network/file-input-stream;1"]
 								  .createInstance(Components.interfaces.nsIFileInputStream);
-		this._rawStream.init(this.file, 0x01, 0664, 0);
+		this._rawStream.init(this.file, 0x01, 0o664, 0);
 	},
 	
 	"_rewind":function() {
@@ -856,7 +687,7 @@ Zotero.Translate.IO.Read.prototype = {
 	
 	"setCharacterSet":function(charset) {
 		if(typeof charset !== "string") {
-			throw "Translate: setCharacterSet: charset must be a string";
+			throw new Error("Translate: setCharacterSet: charset must be a string");
 		}
 		
 		// seek back to the beginning
@@ -895,7 +726,7 @@ Zotero.Translate.IO.Read.prototype = {
 			this._xmlInvalid = true;
 			throw e;
 		}
-		return (Zotero.isFx ? this._sandboxManager.wrap(xml) : xml);
+		return xml;
 	},
 	
 	init: function (newMode) {
@@ -933,7 +764,7 @@ Zotero.Translate.IO.Write = function(file) {
 	Zotero.Translate.IO.maintainedInstances.push(this);
 	this._rawStream = Components.classes["@mozilla.org/network/file-output-stream;1"]
 		.createInstance(Components.interfaces.nsIFileOutputStream);
-	this._rawStream.init(file, 0x02 | 0x08 | 0x20, 0664, 0); // write, create, truncate
+	this._rawStream.init(file, 0x02 | 0x08 | 0x20, 0o664, 0); // write, create, truncate
 	this._writtenToStream = false;
 }
 
@@ -952,7 +783,7 @@ Zotero.Translate.IO.Write.prototype = {
 	
 	"setCharacterSet":function(charset) {
 		if(typeof charset !== "string") {
-			throw "Translate: setCharacterSet: charset must be a string";
+			throw new Error("Translate: setCharacterSet: charset must be a string");
 		}
 		
 		if(!this.outputStream) {

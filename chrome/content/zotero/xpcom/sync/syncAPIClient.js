@@ -40,6 +40,8 @@ Zotero.Sync.APIClient = function (options) {
 	
 	this.failureDelayIntervals = [2500, 5000, 10000, 20000, 40000, 60000, 120000, 240000, 300000];
 	this.failureDelayMax = 60 * 60 * 1000; // 1 hour
+	this.rateDelayIntervals = [30, 60, 300];
+	this.rateDelayPosition = 0;
 }
 
 Zotero.Sync.APIClient.prototype = {
@@ -53,7 +55,7 @@ Zotero.Sync.APIClient.prototype = {
 		Object.assign(opts, options);
 		opts.successCodes = [200, 403, 404];
 		var xmlhttp = yield this.makeRequest("GET", uri, opts);
-		if (xmlhttp.status == 403 || xmlhttp.status == 404) {
+		if (xmlhttp.status == 403) {
 			return false;
 		}
 		var json = this._parseJSON(xmlhttp.responseText);
@@ -83,10 +85,13 @@ Zotero.Sync.APIClient.prototype = {
 	 */	
 	getGroups: Zotero.Promise.coroutine(function* (userID) {
 		if (!userID) throw new Error("User ID not provided");
-
+		
 		var uri = this.baseURL + "users/" + userID + "/groups";
-		var xmlhttp = yield this.makeRequest("GET", uri);
-		return this._parseJSON(xmlhttp.responseText);
+		return yield this.getPaginatedResults(
+			uri,
+			(previous, xmlhttp, restart) => [...previous, ...this._parseJSON(xmlhttp.responseText)],
+			[]
+		);
 	}),
 	
 	
@@ -157,6 +162,35 @@ Zotero.Sync.APIClient.prototype = {
 			deleted: this._parseJSON(xmlhttp.responseText)
 		};
 	}),
+	
+	
+	getKeys: async function (libraryType, libraryTypeID, queryParams) {
+		var params = {
+			libraryType: libraryType,
+			libraryTypeID: libraryTypeID,
+			format: 'keys'
+		};
+		if (queryParams) {
+			for (let i in queryParams) {
+				params[i] = queryParams[i];
+			}
+		}
+		
+		// TODO: Use pagination
+		var uri = this.buildRequestURI(params);
+		
+		var options = {
+			successCodes: [200, 304]
+		};
+		var xmlhttp = await this.makeRequest("GET", uri, options);
+		if (xmlhttp.status == 304) {
+			return false;
+		}
+		return {
+			libraryVersion: this._getLastModifiedVersion(xmlhttp),
+			keys: xmlhttp.responseText.trim().split(/\n/).filter(key => key)
+		};
+	},
 	
 	
 	/**
@@ -623,16 +657,24 @@ Zotero.Sync.APIClient.prototype = {
 				try {
 					var xmlhttp = yield Zotero.HTTP.request(method, uri, opts);
 					this._checkBackoff(xmlhttp);
+					this.rateDelayPosition = 0;
 					return xmlhttp;
 				}
 				catch (e) {
 					tries++;
 					if (e instanceof Zotero.HTTP.UnexpectedStatusException) {
 						this._checkConnection(e.xmlhttp, e.channel);
-						//this._checkRetry(e.xmlhttp);
+						if (this._check429(e.xmlhttp)) {
+							// Return false to keep retrying request
+							return false;
+						}
 						
 						if (e.is5xx()) {
 							Zotero.logError(e);
+							if (e.xmlhttp.status == 503 && this._checkRetry(e.xmlhttp)) {
+								return false;
+							}
+							
 							if (!failureDelayGenerator) {
 								// Keep trying for up to an hour
 								failureDelayGenerator = Zotero.Utilities.Internal.delayGenerator(
@@ -661,6 +703,77 @@ Zotero.Sync.APIClient.prototype = {
 	}),
 	
 	
+	/**
+	 * Retrieve paginated requests automatically based on the Link header, passing the results to a
+	 * reducer
+	 *
+	 * @param {String} initialURL
+	 * @param {Function} reducer - Reducer function taking (previousValue, xmlhttp, restart)
+	 *                                accumulator: Return value from previous invocation, or initialValue
+	 *                                xmlhttp: XMLHTTPRequest object from previous request
+	 *                                restart: A function to restart from the beginning
+	 * @param {mixed} initialValue
+	 * @return {mixed} - The reduced value
+	 */
+	getPaginatedResults: Zotero.Promise.coroutine(function* (initialURL, reducer, initialValue) {
+		let url = initialURL;
+		let accumulator;
+		let restart = false;
+		while (true) {
+			let xmlhttp = yield this.makeRequest("GET", url);
+			accumulator = reducer(
+				accumulator === undefined ? initialValue : accumulator,
+				xmlhttp,
+				function () {
+					restart = true;
+				}
+			);
+			if (restart) {
+				accumulator = undefined;
+				url = initialURL;
+				restart = false;
+				continue;
+			}
+			let link = this._parseLinkHeader(xmlhttp.getResponseHeader('Link'));
+			if (link && link.next) {
+				url = link.next;
+			}
+			else {
+				break;
+			}
+		}
+		return accumulator;
+	}),
+	
+	
+	/**
+	 * Parse a Link header
+	 *
+	 * From https://gist.github.com/deiu/9335803
+	 * MIT-licensed
+	 */
+	_parseLinkHeader: function (link) {
+		var linkexp = /<[^>]*>\s*(\s*;\s*[^\(\)<>@,;:"\/\[\]\?={} \t]+=(([^\(\)<>@,;:"\/\[\]\?={} \t]+)|("[^"]*")))*(,|$)/g;
+		var paramexp = /[^\(\)<>@,;:"\/\[\]\?={} \t]+=(([^\(\)<>@,;:"\/\[\]\?={} \t]+)|("[^"]*"))/g;
+		var matches = link.match(linkexp);
+		var rels = {};
+		for (var i = 0; i < matches.length; i++) {
+			var split = matches[i].split('>');
+			var href = split[0].substring(1);
+			var ps = split[1];
+			var s = ps.match(paramexp);
+			for (var j = 0; j < s.length; j++) {
+				var p = s[j];
+				var paramsplit = p.split('=');
+				var name = paramsplit[0];
+				var rel = paramsplit[1].replace(/["']/g, '');
+				rels[rel] = href;
+			}
+		}
+		return rels;
+	},
+	
+	
 	_parseJSON: function (json) {
 		try {
 			json = JSON.parse(json);
@@ -675,54 +788,21 @@ Zotero.Sync.APIClient.prototype = {
 	
 	
 	/**
-	 * Check connection for certificate errors, interruptions, and empty responses and
-	 * throw an appropriate error
+	 * Check connection for interruptions and empty responses and throw an appropriate error
 	 */
 	_checkConnection: function (xmlhttp, channel) {
-		const Ci = Components.interfaces;
-		
 		if (!xmlhttp.responseText && (xmlhttp.status == 0 || xmlhttp.status == 200)) {
 			let msg = null;
 			let dialogButtonText = null;
 			let dialogButtonCallback = null;
 			
-			// Check SSL cert
-			if (channel) {
-				let secInfo = channel.securityInfo;
-				if (secInfo instanceof Ci.nsITransportSecurityInfo) {
-					secInfo.QueryInterface(Ci.nsITransportSecurityInfo);
-					if ((secInfo.securityState & Ci.nsIWebProgressListener.STATE_IS_INSECURE)
-							== Ci.nsIWebProgressListener.STATE_IS_INSECURE) {
-						let url = channel.name;
-						let ios = Components.classes["@mozilla.org/network/io-service;1"]
-							.getService(Components.interfaces.nsIIOService);
-						try {
-							var uri = ios.newURI(url, null, null);
-							var host = uri.host;
-						}
-						catch (e) {
-							Zotero.debug(e);
-						}
-						let kbURL = 'https://www.zotero.org/support/kb/ssl_certificate_error';
-						msg = Zotero.getString('sync.storage.error.webdav.sslCertificateError', host);
-						dialogButtonText = Zotero.getString('general.moreInformation');
-						dialogButtonCallback = function () {
-							let wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
-								.getService(Components.interfaces.nsIWindowMediator);
-							let win = wm.getMostRecentWindow("navigator:browser");
-							win.ZoteroPane.loadURI(kbURL, { metaKey: true, shiftKey: true });
-						};
-					}
-					else if ((secInfo.securityState & Ci.nsIWebProgressListener.STATE_IS_BROKEN)
-							== Ci.nsIWebProgressListener.STATE_IS_BROKEN) {
-						msg = Zotero.getString('sync.error.sslConnectionError');
-					}
-				}
-			}
-			if (!msg && xmlhttp.status === 0) {
+			if (xmlhttp.status === 0) {
 				msg = Zotero.getString('sync.error.checkConnection');
+				dialogButtonText = Zotero.getString('general.moreInformation');
+				let url = 'https://www.zotero.org/support/kb/connection_error';
+				dialogButtonCallback = () => Zotero.launchURL(url);
 			}
-			if (!msg) {
+			else if (!msg) {
 				msg = Zotero.getString('sync.error.emptyResponseServer')
 					+ Zotero.getString('general.tryAgainLater');
 			}
@@ -740,14 +820,25 @@ Zotero.Sync.APIClient.prototype = {
 	
 	_checkBackoff: function (xmlhttp) {
 		var backoff = xmlhttp.getResponseHeader("Backoff");
-		if (backoff) {
-			// Sanity check -- don't wait longer than an hour
-			if (backoff > 3600) {
-				// TODO: Update status?
-				
-				this.caller.pause(backoff * 1000);
-			}
+		if (backoff && parseInt(backoff) == backoff) {
+			// TODO: Update status?
+			this.caller.pause(backoff * 1000);
 		}
+	},
+	
+	
+	_checkRetry: function (xmlhttp) {
+		var retryAfter = xmlhttp.getResponseHeader("Retry-After");
+		var delay;
+		if (!retryAfter) return false;
+		if (parseInt(retryAfter) != retryAfter) {
+			Zotero.logError(`Invalid Retry-After delay ${retryAfter}`);
+			return false;
+		}
+		// TODO: Update status?
+		delay = retryAfter;
+		this.caller.pause(delay * 1000);
+		return true;
 	},
 	
 	
@@ -757,6 +848,22 @@ Zotero.Sync.APIClient.prototype = {
 			Zotero.debug("Server returned 412: " + xmlhttp.responseText, 2);
 			throw new Zotero.HTTP.UnexpectedStatusException(xmlhttp);
 		}
+	},
+	
+	
+	_check429: function (xmlhttp) {
+		if (xmlhttp.status != 429) return false;
+		
+		// If there's a Retry-After header, use that
+		if (this._checkRetry(xmlhttp)) {
+			return true;
+		}
+		
+		// Otherwise, pause for increasing amounts, or max amount if no more
+		var delay = this.rateDelayIntervals[this.rateDelayPosition++]
+			|| this.rateDelayIntervals[this.rateDelayIntervals.length - 1];
+		this.caller.pause(delay * 1000);
+		return true;
 	},
 	
 	

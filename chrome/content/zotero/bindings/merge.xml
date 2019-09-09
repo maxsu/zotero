@@ -308,13 +308,13 @@
 					this._data = val;
 					
 					var button = this._id('choose-button');
+					button.label = Zotero.getString('sync.conflict.chooseThisVersion');
 					if (this.showButton) {
-						button.label = Zotero.getString('sync.conflict.chooseThisVersion');
 						button.onclick = () => this.parent.choosePane(this);
-						button.hidden = false;
+						button.style.visibility = 'visible';
 					}
 					else {
-						button.hidden = true;
+						button.style.visibility = 'hidden';
 					}
 					
 					if (val.deleted) {
@@ -380,10 +380,15 @@
 					// Store JSON
 					this._data = val;
 					
+					// Create a copy of the JSON that we can clean for display, since the remote object
+					// might reference things that don't exist locally
+					var displayJSON = Object.assign({}, val);
+					displayJSON.collections = [];
+					
 					// Create item from JSON for metadata box
 					var item = new Zotero.Item(val.itemType);
 					item.libraryID = this.libraryID;
-					item.fromJSON(val);
+					item.fromJSON(displayJSON);
 					objbox.item = item;
 				]]>
 				</setter>
@@ -418,7 +423,7 @@
 						<xul:label value="&zotero.merge.deleted;"/>
 					</xul:hbox>
 				</xul:groupbox>
-				<xul:button anonid="choose-button" hidden="true"/>
+				<xul:button anonid="choose-button"/>
 			</xul:vbox>
 		</content>
 	</binding>

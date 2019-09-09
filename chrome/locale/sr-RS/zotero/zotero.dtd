@@ -10,10 +10,20 @@
 <!ENTITY zotero.general.cancel "Откажи">
 <!ENTITY zotero.general.refresh "Освежи">
 <!ENTITY zotero.general.saveAs "Сачувај као…">
+<!ENTITY zotero.general.options "Options">
 <!ENTITY zotero.general.advancedOptions.label "Напредне опције">
+<!ENTITY zotero.general.tools "Алати">
+<!ENTITY zotero.general.more "Више">
+<!ENTITY zotero.general.loading "Учитавам…">
+<!ENTITY zotero.general.close "Затвори">
+<!ENTITY zotero.general.minimize "Умањи">
+<!ENTITY zotero.general.other "Other…">
+<!ENTITY zotero.general.bigger "Bigger">
+<!ENTITY zotero.general.smaller "Smaller">
+<!ENTITY zotero.general.reset "Reset">
+
 
 <!ENTITY zotero.errorReport.title "Пријављивање грешака у Зотеру">
-<!ENTITY zotero.errorReport.unrelatedMessages "Ово може да обухвати поруке које немају везе са Зотером.">
 <!ENTITY zotero.errorReport.submissionInProgress "Сачекајте док пошаљемо извештај о грешци.">
 <!ENTITY zotero.errorReport.submitted "Извештај о грешци је послат.">
 <!ENTITY zotero.errorReport.reportID "Број извештаја:">
@@ -24,8 +34,8 @@
 <!ENTITY zotero.upgrade.newVersionInstalled "Инсталирали сте нову верзију Зотера.">
 <!ENTITY zotero.upgrade.upgradeRequired "Зотерова база података мора бити ажурирана да би радила са новом верзијом.">
 <!ENTITY zotero.upgrade.autoBackup "Пре даљих измена, направићемо резервну копију ваше постојеће базе података.">
-<!ENTITY zotero.upgrade.majorUpgrade "Ово је веће ажурирање">
-<!ENTITY zotero.upgrade.majorUpgradeBeforeLink "Проверите">
+<!ENTITY zotero.upgrade.majorUpgrade "Ово је веће ажурирање.">
+<!ENTITY zotero.upgrade.majorUpgradeBeforeLink "Уверите се да сте детаљно погледали">
 <!ENTITY zotero.upgrade.majorUpgradeLink "упутства за ажурирање">
 <!ENTITY zotero.upgrade.majorUpgradeAfterLink "пре него што наставите.">
 <!ENTITY zotero.upgrade.upgradeInProgress "Сачекајте док се програм не ажурира. Ово може потрајати неколико минута.">
@@ -33,11 +43,6 @@
 <!ENTITY zotero.upgrade.changeLogBeforeLink "Погледајте">
 <!ENTITY zotero.upgrade.changeLogLink "записник промена">
 <!ENTITY zotero.upgrade.changeLogAfterLink "да би видели шта је ново.">
-
-<!ENTITY zotero.contextMenu.addTextToCurrentNote "Додајте означено у Зотерову белешку">
-<!ENTITY zotero.contextMenu.addTextToNewNote "Направите Зотерову ставку и белешку из изабраног">
-<!ENTITY zotero.contextMenu.saveLinkAsItem "Сачувај везу као Зотеро ставку">
-<!ENTITY zotero.contextMenu.saveImageAsItem "Сачувај слику као Зотеро ставку">
 
 <!ENTITY zotero.tabs.info.label "Инфо">
 <!ENTITY zotero.tabs.notes.label "Белешке">
@@ -48,6 +53,7 @@
 
 <!ENTITY zotero.toolbar.duplicate.label "Прикажи дупликате">
 <!ENTITY zotero.collections.showUnfiledItems "Прикажи неразврстане">
+<!ENTITY zotero.collections.showRetractedItems "Show Retracted Items">
 
 <!ENTITY zotero.items.itemType "Врста ставке">
 <!ENTITY zotero.items.type_column "Врста ставке">
@@ -85,8 +91,6 @@
 <!ENTITY zotero.items.menu.showInLibrary "Прикажи у библиотеци">
 <!ENTITY zotero.items.menu.attach.note "Додај белешку">
 <!ENTITY zotero.items.menu.attach "Додај прилог">
-<!ENTITY zotero.items.menu.attach.snapshot "Приложо снимак тренутне странице">
-<!ENTITY zotero.items.menu.attach.link "Приложи везу до тренутне странице">
 <!ENTITY zotero.items.menu.attach.link.uri "Приложи везу до адресе…">
 <!ENTITY zotero.items.menu.attach.file "Приложи сачувану копију датотеке…">
 <!ENTITY zotero.items.menu.attach.fileLink "Приложи везу до датотеке…">
@@ -94,16 +98,17 @@
 <!ENTITY zotero.items.menu.restoreToLibrary "Врати у библиотеку">
 <!ENTITY zotero.items.menu.duplicateItem "Умножи ставку">
 <!ENTITY zotero.items.menu.mergeItems "Споји ставке…">
+<!ENTITY zotero.items.menu.unrecognize "Опозиви преузимање метаподатака">
+<!ENTITY zotero.items.menu.reportMetadata "Пријави неисправне метаподатке">
 
 <!ENTITY zotero.duplicatesMerge.versionSelect "Изаберите верзију ставке која ће постати главна ставка:">
 <!ENTITY zotero.duplicatesMerge.fieldSelect "Изаберите поља која желите да преузмете из друге верзије ставке:">
 
 <!ENTITY zotero.toolbar.newItem.label "Нова ставка">
 <!ENTITY zotero.toolbar.moreItemTypes.label "Више">
-<!ENTITY zotero.toolbar.newItemFromPage.label "Направите веб страницу од тренутне странице">
 <!ENTITY zotero.toolbar.lookup.label "Додај ставку(е) на основу идентификатора">
 <!ENTITY zotero.toolbar.removeItem.label "Уклони ставку…">
-<!ENTITY zotero.toolbar.newLibrary.label "Нова библиотека…">
+<!ENTITY zotero.toolbar.newLibrary.label "Нова библиотека">
 <!ENTITY zotero.toolbar.newCollection.label "Нова збирка…">
 <!ENTITY zotero.toolbar.markFeedRead.label "Означи довод прочитаним…">
 <!ENTITY zotero.toolbar.newGroup "Нова група…">
@@ -121,13 +126,11 @@
 <!ENTITY zotero.toolbar.supportAndDocumentation "Подршка и документација">
 <!ENTITY zotero.toolbar.about.label "О програму Зотеро">
 <!ENTITY zotero.toolbar.advancedSearch "Напредна претрага">
-<!ENTITY zotero.toolbar.tab.tooltip "Пређи у режим језичка">
 <!ENTITY zotero.toolbar.openURL.label "Пронађи">
 <!ENTITY zotero.toolbar.openURL.tooltip "Налази ставу у вашој локалној библиотеци">
 
-<!ENTITY zotero.toolbar.feeds.new "Нови довод…">
+<!ENTITY zotero.toolbar.feeds.new "Нови довод">
 <!ENTITY zotero.toolbar.feeds.new.fromURL "Из адресе…">
-<!ENTITY zotero.toolbar.feeds.new.fromPage "Са странице…">
 <!ENTITY zotero.toolbar.feeds.new.fromOPML "Са ОПМЛ-а…">
 <!ENTITY zotero.toolbar.feeds.refresh "Освежи довод">
 <!ENTITY zotero.toolbar.feeds.edit "Уреди довод…">
@@ -142,6 +145,8 @@
 <!ENTITY zotero.item.copyAsURL "Копирај као адресу">
 <!ENTITY zotero.item.deletePermanently "Трајно изриши…">
 
+<!ENTITY zotero.item.tags.removeAll "Уклони све ознаке…">
+
 <!ENTITY zotero.toolbar.newNote "Нова белешка">
 <!ENTITY zotero.toolbar.note.standalone "Нова самостална белешка">
 <!ENTITY zotero.toolbar.note.child "Додај подбелешку">
@@ -155,6 +160,7 @@
 <!ENTITY zotero.tagSelector.loadingTags "Учитавам ознаке…">
 <!ENTITY zotero.tagSelector.showAutomatic "Аутоматски прикажи">
 <!ENTITY zotero.tagSelector.displayAllInLibrary "Прикажи све ознаке у овој библиотеци">
+<!ENTITY zotero.tagSelector.deleteAutomaticInLibrary "Избриши аутоматске ознаке у овој библиотеци…">
 <!ENTITY zotero.tagSelector.clearAll "Поништи избор">
 <!ENTITY zotero.tagSelector.assignColor "Додели боју…">
 <!ENTITY zotero.tagSelector.renameTag "Преименуј ознаку…">
@@ -166,17 +172,17 @@
 <!ENTITY zotero.tagColorChooser.setColor "Постави боју">
 <!ENTITY zotero.tagColorChooser.removeColor "Уклони боју">
 
-<!ENTITY zotero.lookup.description "Унесите ISBN, DOI или PMID за тражење у приложеним пољима.">
+<!ENTITY zotero.lookup.description "Enter ISBNs, DOIs, PMIDs, or arXiv IDs to add to your library:">
 <!ENTITY zotero.lookup.button.search "Претрага">
 
 <!ENTITY zotero.selectitems.title "Изабери ставке">
-<!ENTITY zotero.selectitems.intro.label "Изабери које ставке желите да додате у вашу библиотеку">
+<!ENTITY zotero.selectitems.intro.label "Изаберите које ставке желите да додате у вашу библиотеку">
 <!ENTITY zotero.selectitems.cancel.label "Откажи">
 <!ENTITY zotero.selectitems.select.label "У реду">
 
 <!ENTITY zotero.bibliography.title "Направи цитат/библиографију">
 <!ENTITY zotero.bibliography.style.label "Стил цитата:">
-<!ENTITY zotero.bibliography.manageStyles "Manage Styles…">
+<!ENTITY zotero.bibliography.manageStyles "Уреди стилове…">
 <!ENTITY zotero.bibliography.locale.label "Језик:">
 <!ENTITY zotero.bibliography.outputMode "Извези као:">
 <!ENTITY zotero.bibliography.bibliography "Библиографију">
@@ -192,6 +198,16 @@
 <!ENTITY zotero.integration.quickFormatDialog.title "Брзо форматирање цитата">
 
 <!ENTITY zotero.progress.title "Напредак">
+
+<!ENTITY zotero.import "Import">
+<!ENTITY zotero.import.whereToImportFrom "Where do you want to import from?">
+<!ENTITY zotero.import.source.file "A file (BibTeX, RIS, Zotero RDF, etc.)">
+<!ENTITY zotero.import.importing "Importing…">
+<!ENTITY zotero.import.database "Database">
+<!ENTITY zotero.import.lastModified "Last Modified">
+<!ENTITY zotero.import.size "Size">
+<!ENTITY zotero.import.createCollection "Place imported collections and items into new collection">
+<!ENTITY zotero.import.fileHandling "File Handling">
 
 <!ENTITY zotero.exportOptions.title "Извоз…">
 <!ENTITY zotero.exportOptions.format.label "Формат:">
@@ -223,22 +239,25 @@
 <!ENTITY zotero.integration.prefs.footnotes.label "Фуснота">
 <!ENTITY zotero.integration.prefs.endnotes.label "Енднота">
 
-<!ENTITY zotero.integration.prefs.formatUsing.label "Форматирај помоћу:">
+<!ENTITY zotero.integration.prefs.formatUsing.label "Сачувај цитате као:">
 <!ENTITY zotero.integration.prefs.bookmarks.label "Обележивачи">
-<!ENTITY zotero.integration.prefs.bookmarks.caption "Обележивачи ће остати сачувани кроз Microsoft Word и ЛибреОфис, али могу бити нехотично промењени. Због сагласности са свим програмима, цитате не можете уметнути у фусноте или ендноте у овом режиму.">
+<!ENTITY zotero.integration.prefs.bookmarks.caption "Обележивачи се могу делити између програма Word и LibreOffice, али могу направити проблеме уколико их случајно промените и не могу бити уметнути као фусноте.">
 
+<!ENTITY zotero.integration.prefs.automaticCitationUpdates.label "Аутоматски ажурирај цитате">
+<!ENTITY zotero.integration.prefs.automaticCitationUpdates.tooltip "Цитати који чекају на ажурирање ће бити истакнути унутар документа">
+<!ENTITY zotero.integration.prefs.automaticCitationUpdates.description "Онемогућавање ажурирања може убрзати уметање цитата када радите са великим документима. Увек можете кликните на „Освежи“ како би ручно ажурурати цитате.">
 
-<!ENTITY zotero.integration.prefs.automaticJournalAbbeviations.label "Аутоматски скрати наслове часописа">
-<!ENTITY zotero.integration.prefs.automaticJournalAbbeviations.caption "Аутоматски преузима МЕДЛАЈН скраћенице часописа на основу наслова часописа. Поље „Скраћеница часописа“ ће бити занемарено.">
+<!ENTITY zotero.integration.prefs.automaticJournalAbbeviations.label "Користи скраћенице часописа из MEDLINE-а">
+<!ENTITY zotero.integration.prefs.automaticJournalAbbeviations.caption "Поље „Скраћеница часописа“ ће бити занемарено.">
 
-<!ENTITY zotero.integration.prefs.storeReferences.label "Сачувај референце у документу">
-<!ENTITY zotero.integration.prefs.storeReferences.caption "Чување референци унутар документа мало повећава величину датотеке, али ће вам омогућити да делите документ са колегама без потребе да правите Зотеро групу. Зотеро 3.0 и новије верзије ће захтевати да ажурирате документе.">
+<!ENTITY zotero.integration.prefs.exportDocument "Switch to a Different Word Processor…">
 
 <!ENTITY zotero.integration.showEditor.label "Прикажи уређивача">
 <!ENTITY zotero.integration.classicView.label "Класични приказ">
 
 <!ENTITY zotero.integration.references.label "Референце у библиографији">
 
+<!ENTITY zotero.sync.stop "Заустави синхронизацију">
 <!ENTITY zotero.sync.error "Грешка приликом усклађивања">
 <!ENTITY zotero.sync.storage.progress "Напредак:">
 <!ENTITY zotero.sync.storage.downloads "Преузимања:">
@@ -270,14 +289,10 @@
 <!ENTITY zotero.feedSettings.title.label "Наслов:">
 <!ENTITY zotero.feedSettings.refresh.label1 "Ажурирај све доводе">
 <!ENTITY zotero.feedSettings.refresh.label2 "сат(и)">
-<!ENTITY zotero.feedSettings.cleanupAfter.label1 "Уклони прочитане чланке након">
-<!ENTITY zotero.feedSettings.cleanupAfter.label2 "дан(а)">
-
-
-<!ENTITY zotero.recognizePDF.recognizing.label "Преузимам метаподатке…">
-<!ENTITY zotero.recognizePDF.cancel.label "Откажи">
-<!ENTITY zotero.recognizePDF.pdfName.label "Назив ПДФ-а">
-<!ENTITY zotero.recognizePDF.itemName.label "Назив ставке">
+<!ENTITY zotero.feedSettings.cleanupUnreadAfter.label1 "Уклони непрочитане ставке након">
+<!ENTITY zotero.feedSettings.cleanupUnreadAfter.label2 "дан(а)">
+<!ENTITY zotero.feedSettings.cleanupReadAfter.label1 "Уклони прочитане ставке након">
+<!ENTITY zotero.feedSettings.cleanupReadAfter.label2 "дан(а)">
 
 <!ENTITY zotero.rtfScan.title "РТФ скенирање">
 <!ENTITY zotero.rtfScan.cancel.label "Откажи">
@@ -295,7 +310,7 @@
 <!ENTITY zotero.rtfScan.citationsPage.description "Прегледајте приложену листу препознатих цитата како би потврдили да је Зотеро изабрао праву ставку. Било који немапиран или двосмислен цитат мора бити потврђен пре него што пређете на наредни корак.">
 <!ENTITY zotero.rtfScan.stylePage.label "Форматирање документа">
 <!ENTITY zotero.rtfScan.formatPage.label "Форамтирање цитата">
-<!ENTITY zotero.rtfScan.formatPage.description "Зотеро обрађује и форматира РТГ датотеку. Будите стрпљиви.">
+<!ENTITY zotero.rtfScan.formatPage.description "Зотеро обрађује и форматира РТФ датотеку. Будите стрпљиви.">
 <!ENTITY zotero.rtfScan.completePage.label "РТФ скенирање је завршено">
 <!ENTITY zotero.rtfScan.completePage.description "Ваш документ је скениран и обрађен. Проверите да ли је исправно форматиран.">
 <!ENTITY zotero.rtfScan.inputFile.label "Улазна датотека">
@@ -304,10 +319,6 @@
 <!ENTITY zotero.file.choose.label "Изабери датотеку…">
 <!ENTITY zotero.file.noneSelected.label "Није изабрана датотека">
 
-<!ENTITY zotero.downloadManager.label "Сачувај у Зотеро">
-<!ENTITY zotero.downloadManager.saveToLibrary.description "Не можете да сачувате прилоге унутар изабране библиотеке. Ова ставка ће зато бити сачувана у вашу личну библиотеку.">
-<!ENTITY zotero.downloadManager.noPDFTools.description "За употребу ових могућности морате најпре инсталирати ПДФ алате из поставки претраге Зотера.">
-
-<!ENTITY zotero.attachLink.title "Додај везу до адресе">
+<!ENTITY zotero.attachLink.title "Додај везу до УРИ адресе">
 <!ENTITY zotero.attachLink.label.link "Веза:">
 <!ENTITY zotero.attachLink.label.title "Наслов:">

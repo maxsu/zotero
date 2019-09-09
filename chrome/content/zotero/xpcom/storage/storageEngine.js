@@ -34,6 +34,7 @@ if (!Zotero.Sync.Storage) {
  * @param {Object} options
  * @param {Integer} options.libraryID
  * @param {Object} options.controller - Storage controller instance (ZFS_Controller/WebDAV_Controller)
+ * @param {Function} [onProgress] - Function to run when a request finishes: f(progress, progressMax)
  * @param {Function} [onError] - Function to run on error
  * @param {Boolean} [stopOnError]
  */
@@ -52,11 +53,15 @@ Zotero.Sync.Storage.Engine = function (options) {
 	this.library = Zotero.Libraries.get(options.libraryID);
 	this.controller = options.controller;
 	
+	this.numRequests = 0;
+	this.requestsRemaining = 0;
+	
 	this.local = Zotero.Sync.Storage.Local;
 	this.utils = Zotero.Sync.Storage.Utilities;
 	
 	this.setStatus = options.setStatus || function () {};
 	this.onError = options.onError || function (e) {};
+	this.onProgress = options.onProgress || function (progress, progressMax) {};
 	this.stopOnError = options.stopOnError || false;
 	
 	this.queues = [];
@@ -122,21 +127,20 @@ Zotero.Sync.Storage.Engine.prototype.start = Zotero.Promise.coroutine(function* 
 	
 	var lastSyncTime = null;
 	var downloadAll = this.local.downloadOnSync(libraryID);
-	// After all library data is downloaded during a data sync, the library version is updated to match
-	// the server version. We track a library version for file syncing separately, so that even if Zotero
-	// is closed or interrupted between a data sync and a file sync, we know that file syncing has to be
-	// performed for any files marked for download during data sync (based on outdated mtime/md5). Files
-	// may be missing remotely, though, so it's only necessary to try to download them once every time
-	// there are remote storage changes, which we indicate with a flag set in syncLocal.
 	//
 	// TODO: If files are persistently missing, don't try to download them each time
-	if (downloadAll && !this.library.storageDownloadNeeded) {
-		this.library.storageVersion = this.library.libraryVersion;
-		yield this.library.saveTx();
+	
+	var filesEditable = Zotero.Libraries.get(libraryID).filesEditable;
+	this.requestsRemaining = 0;
+	
+	// Clear over-quota flag on manual sync
+	if (!this.background && Zotero.Sync.Storage.Local.storageRemainingForLibrary.has(libraryID)) {
+		Zotero.debug("Clearing over-quota flag for " + this.library.name);
+		Zotero.Sync.Storage.Local.storageRemainingForLibrary.delete(libraryID)
 	}
 	
 	// Check for updated files to upload
-	if (!Zotero.Libraries.isFilesEditable(libraryID)) {
+	if (!filesEditable) {
 		Zotero.debug("No file editing access -- skipping file modification check for "
 			+ this.library.name);
 	}
@@ -189,7 +193,7 @@ Zotero.Sync.Storage.Engine.prototype.start = Zotero.Promise.coroutine(function* 
 	}
 	
 	// Get files to upload
-	if (Zotero.Libraries.isFilesEditable(libraryID)) {
+	if (filesEditable) {
 		let itemIDs = yield this.local.getFilesToUpload(libraryID);
 		if (itemIDs.length) {
 			Zotero.debug(itemIDs.length + " file" + (itemIDs.length == 1 ? '' : 's') + " to "
@@ -224,7 +228,7 @@ Zotero.Sync.Storage.Engine.prototype.start = Zotero.Promise.coroutine(function* 
 			if (p.isFulfilled()) {
 				succeeded++;
 			}
-			else {
+			else if (!p.isPending()) {
 				if (this.stopOnError) {
 					let e = p.reason();
 					Zotero.debug(`File ${type} sync failed for ${this.library.name}`);
@@ -239,7 +243,11 @@ Zotero.Sync.Storage.Engine.prototype.start = Zotero.Promise.coroutine(function* 
 		
 		changes.updateFromResults(results.filter(p => p.isFulfilled()).map(p => p.value()));
 		
-		if (type == 'download' && results.every(p => !p.isRejected())) {
+		if (type == 'download'
+				// Not stopped
+				&& this.requestsRemaining == 0
+				// No errors
+				&& results.every(p => !p.isRejected())) {
 			downloadSuccessful = true;
 		}
 	}
@@ -260,7 +268,7 @@ Zotero.Sync.Storage.Engine.prototype.start = Zotero.Promise.coroutine(function* 
 	}
 	
 	// If WebDAV sync, purge orphaned files
-	if (this.controller.mode == 'webdav') {
+	if (downloadSuccessful && this.controller.mode == 'webdav') {
 		try {
 			yield this.controller.purgeOrphanedStorageFiles(libraryID);
 		}
@@ -280,6 +288,7 @@ Zotero.Sync.Storage.Engine.prototype.start = Zotero.Promise.coroutine(function* 
 
 
 Zotero.Sync.Storage.Engine.prototype.stop = function () {
+	Zotero.debug("Stopping file sync for " + this.library.name);
 	for (let type in this.queues) {
 		this.queues[type].stop();
 	}
@@ -290,17 +299,13 @@ Zotero.Sync.Storage.Engine.prototype.queueItem = Zotero.Promise.coroutine(functi
 		case Zotero.Sync.Storage.Local.SYNC_STATE_TO_DOWNLOAD:
 		case Zotero.Sync.Storage.Local.SYNC_STATE_FORCE_DOWNLOAD:
 			var type = 'download';
-			var onStart = Zotero.Promise.method(function (request) {
-				return this.controller.downloadFile(request);
-			}.bind(this));
+			var fn = 'downloadFile';
 			break;
 		
 		case Zotero.Sync.Storage.Local.SYNC_STATE_TO_UPLOAD:
 		case Zotero.Sync.Storage.Local.SYNC_STATE_FORCE_UPLOAD:
 			var type = 'upload';
-			var onStart = Zotero.Promise.method(function (request) {
-				return this.controller.uploadFile(request);
-			}.bind(this));
+			var fn = 'uploadFile';
 			break;
 		
 		case false:
@@ -311,31 +316,25 @@ Zotero.Sync.Storage.Engine.prototype.queueItem = Zotero.Promise.coroutine(functi
 			throw new Error("Invalid sync state " + item.attachmentSyncState);
 	}
 	
-	var request = new Zotero.Sync.Storage.Request({
-		type,
-		libraryID: this.libraryID,
-		name: item.libraryKey,
-		onStart,
-		onProgress: this.onProgress
-	});
 	if (type == 'upload') {
-		try {
-			request.setMaxSize(yield Zotero.Attachments.getTotalFileSize(item));
-		}
-		// If this fails, ignore it, though we might fail later
-		catch (e) {
-			// But if the file doesn't exist yet, don't try to upload it
-			//
-			// This isn't a perfect test, because the file could still be in the process of being
-			// downloaded (e.g., from the web). It'd be better to download files to a temp
-			// directory and move them into place.
-			if (!(yield item.getFilePathAsync())) {
-				Zotero.debug("File " + item.libraryKey + " not yet available to upload -- skipping");
-				return;
-			}
-			
-			Zotero.logError(e);
+		if (!(yield item.fileExists())) {
+			Zotero.debug("File " + item.libraryKey + " not yet available to upload -- skipping");
+			return;
 		}
 	}
-	this.queues[type].add(request.start.bind(request));
+	this.queues[type].add(() => {
+		var request = new Zotero.Sync.Storage.Request({
+			type,
+			libraryID: this.libraryID,
+			name: item.libraryKey,
+			onStart: request => this.controller[fn](request),
+			onStop: () => {
+				this.requestsRemaining--;
+				this.onProgress(this.numRequests - this.requestsRemaining, this.numRequests);
+			}
+		});
+		return request.start();
+	});
+	this.numRequests++;
+	this.requestsRemaining++;
 })

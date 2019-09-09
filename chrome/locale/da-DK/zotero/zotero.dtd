@@ -10,10 +10,20 @@
 <!ENTITY zotero.general.cancel "Annullér">
 <!ENTITY zotero.general.refresh "Opdatér">
 <!ENTITY zotero.general.saveAs "Gem som...">
+<!ENTITY zotero.general.options "Indstillinger">
 <!ENTITY zotero.general.advancedOptions.label "Avancerede indstillinger">
+<!ENTITY zotero.general.tools "Tools">
+<!ENTITY zotero.general.more "Mere">
+<!ENTITY zotero.general.loading "Indlæser...">
+<!ENTITY zotero.general.close "Luk">
+<!ENTITY zotero.general.minimize "Minimér">
+<!ENTITY zotero.general.other "Andet...">
+<!ENTITY zotero.general.bigger "Bigger">
+<!ENTITY zotero.general.smaller "Smaller">
+<!ENTITY zotero.general.reset "Reset">
+
 
 <!ENTITY zotero.errorReport.title "Zotero fejlrapport">
-<!ENTITY zotero.errorReport.unrelatedMessages "Dette kan inkludere beskeder, som ikke har noget med Zotero at gøre.">
 <!ENTITY zotero.errorReport.submissionInProgress "Vent venligst mens fejlrapporten registreres.">
 <!ENTITY zotero.errorReport.submitted "Din fejlrapport er registreret.">
 <!ENTITY zotero.errorReport.reportID "Rapport-ID:">
@@ -34,11 +44,6 @@
 <!ENTITY zotero.upgrade.changeLogLink "listen med ændringer">
 <!ENTITY zotero.upgrade.changeLogAfterLink "for at se nyhederne.">
 
-<!ENTITY zotero.contextMenu.addTextToCurrentNote "Overfør den markerede tekst til din note i Zotero">
-<!ENTITY zotero.contextMenu.addTextToNewNote "Opret Zotero-element og note ud fra markering">
-<!ENTITY zotero.contextMenu.saveLinkAsItem "Gem link som Zotero-element.">
-<!ENTITY zotero.contextMenu.saveImageAsItem "Gem billede som Zotero-element.">
-
 <!ENTITY zotero.tabs.info.label "Info">
 <!ENTITY zotero.tabs.notes.label "Noter">
 <!ENTITY zotero.tabs.attachments.label "Vedhæftede filer">
@@ -48,6 +53,7 @@
 
 <!ENTITY zotero.toolbar.duplicate.label "Vis dubletter">
 <!ENTITY zotero.collections.showUnfiledItems "Vis ukategoriserede elementer">
+<!ENTITY zotero.collections.showRetractedItems "Show Retracted Items">
 
 <!ENTITY zotero.items.itemType "Type">
 <!ENTITY zotero.items.type_column "Elementtype">
@@ -85,8 +91,6 @@
 <!ENTITY zotero.items.menu.showInLibrary "Vis i bibliotek">
 <!ENTITY zotero.items.menu.attach.note "Tilføj note">
 <!ENTITY zotero.items.menu.attach "Vedhæft">
-<!ENTITY zotero.items.menu.attach.snapshot "Vedhæft kopi af den aktuelle side">
-<!ENTITY zotero.items.menu.attach.link "Vedhæft link til den aktuelle side">
 <!ENTITY zotero.items.menu.attach.link.uri "Vedhæft link til URI...">
 <!ENTITY zotero.items.menu.attach.file "Vedhæft en gemt kopi af ...">
 <!ENTITY zotero.items.menu.attach.fileLink "Knyt linket til ...">
@@ -94,16 +98,17 @@
 <!ENTITY zotero.items.menu.restoreToLibrary "Genindlæs i bibliotek">
 <!ENTITY zotero.items.menu.duplicateItem "Duplikér valgte element">
 <!ENTITY zotero.items.menu.mergeItems "Flet elementer...">
+<!ENTITY zotero.items.menu.unrecognize "Fortryd indhentning af metadata">
+<!ENTITY zotero.items.menu.reportMetadata "Rapportér forkerte metadata">
 
 <!ENTITY zotero.duplicatesMerge.versionSelect "Vælg den version af elementet som du vil bruge som hovedelement:">
 <!ENTITY zotero.duplicatesMerge.fieldSelect "Vælg felter som skal bevares fra andre versioner af elementet">
 
 <!ENTITY zotero.toolbar.newItem.label "Nyt element">
 <!ENTITY zotero.toolbar.moreItemTypes.label "Mere">
-<!ENTITY zotero.toolbar.newItemFromPage.label "Opret en web-side fra den aktuelle side">
 <!ENTITY zotero.toolbar.lookup.label "Tilføj element(er) ud fra identifikator">
 <!ENTITY zotero.toolbar.removeItem.label "Fjern ...">
-<!ENTITY zotero.toolbar.newLibrary.label "Nyt bibliotek...">
+<!ENTITY zotero.toolbar.newLibrary.label "Nyt bibliotek">
 <!ENTITY zotero.toolbar.newCollection.label "Ny Samling...">
 <!ENTITY zotero.toolbar.markFeedRead.label "Markér nyhedsstrøm som læst">
 <!ENTITY zotero.toolbar.newGroup "Ny Gruppe ...">
@@ -121,13 +126,11 @@
 <!ENTITY zotero.toolbar.supportAndDocumentation "Support og dokumentation">
 <!ENTITY zotero.toolbar.about.label "Om Zotero">
 <!ENTITY zotero.toolbar.advancedSearch "Avanceret søgning">
-<!ENTITY zotero.toolbar.tab.tooltip "Slå faneblade til eller fra">
 <!ENTITY zotero.toolbar.openURL.label "Find">
 <!ENTITY zotero.toolbar.openURL.tooltip "Find gennem dit lokale bibliotek">
 
-<!ENTITY zotero.toolbar.feeds.new "Ny nyhedsstrøm...">
+<!ENTITY zotero.toolbar.feeds.new "Ny nyhedsstrøm">
 <!ENTITY zotero.toolbar.feeds.new.fromURL "Fra URL...">
-<!ENTITY zotero.toolbar.feeds.new.fromPage "Fra side...">
 <!ENTITY zotero.toolbar.feeds.new.fromOPML "Fra OPML...">
 <!ENTITY zotero.toolbar.feeds.refresh "Opdatér nyhedsstrøm">
 <!ENTITY zotero.toolbar.feeds.edit "Redigér nyhedsstrøm...">
@@ -142,6 +145,8 @@
 <!ENTITY zotero.item.copyAsURL "Kopiér som URL">
 <!ENTITY zotero.item.deletePermanently "Slet permanent...">
 
+<!ENTITY zotero.item.tags.removeAll "Remove All Tags…">
+
 <!ENTITY zotero.toolbar.newNote "Ny note">
 <!ENTITY zotero.toolbar.note.standalone "Ny selvstændig note">
 <!ENTITY zotero.toolbar.note.child "Tilføj under-note">
@@ -155,6 +160,7 @@
 <!ENTITY zotero.tagSelector.loadingTags "Indlæser mærker...">
 <!ENTITY zotero.tagSelector.showAutomatic "Vis automatisk">
 <!ENTITY zotero.tagSelector.displayAllInLibrary "Vis alle mærker i dette Bibliotek">
+<!ENTITY zotero.tagSelector.deleteAutomaticInLibrary "Delete Automatic Tags in This Library…">
 <!ENTITY zotero.tagSelector.clearAll "Fravælg alle">
 <!ENTITY zotero.tagSelector.assignColor "Tilknyt farve...">
 <!ENTITY zotero.tagSelector.renameTag "Omdøb mærket ...">
@@ -166,7 +172,7 @@
 <!ENTITY zotero.tagColorChooser.setColor "Sæt farve:">
 <!ENTITY zotero.tagColorChooser.removeColor "Fjern farve">
 
-<!ENTITY zotero.lookup.description "Indtast ISBN, DOI eller PMID for opslag nedenfor.">
+<!ENTITY zotero.lookup.description "Indtast ISBN'er, DOI'er, PMID'er, eller arXiv ID'er som skal tilføjes til dit bibliotek:">
 <!ENTITY zotero.lookup.button.search "Søg">
 
 <!ENTITY zotero.selectitems.title "Vælg elementer">
@@ -176,7 +182,7 @@
 
 <!ENTITY zotero.bibliography.title "Opret reference/referenceliste">
 <!ENTITY zotero.bibliography.style.label "Reference-stil:">
-<!ENTITY zotero.bibliography.manageStyles "Manage Styles…">
+<!ENTITY zotero.bibliography.manageStyles "Håndtér formater...">
 <!ENTITY zotero.bibliography.locale.label "Sprog:">
 <!ENTITY zotero.bibliography.outputMode "Output-tilstand:">
 <!ENTITY zotero.bibliography.bibliography "Referenceliste">
@@ -192,6 +198,16 @@
 <!ENTITY zotero.integration.quickFormatDialog.title "Hurtigformater referencer">
 
 <!ENTITY zotero.progress.title "Fremdrift">
+
+<!ENTITY zotero.import "Importér">
+<!ENTITY zotero.import.whereToImportFrom "Hvor vil du importere fra?">
+<!ENTITY zotero.import.source.file "En fil (BibTeX, RIS, Zotero RDF osv.)">
+<!ENTITY zotero.import.importing "Importerer…">
+<!ENTITY zotero.import.database "Database">
+<!ENTITY zotero.import.lastModified "Sidst ændret">
+<!ENTITY zotero.import.size "Størrelse">
+<!ENTITY zotero.import.createCollection "Placér importerede samlinger og nye elementer i den nye samling">
+<!ENTITY zotero.import.fileHandling "Filhåndtering">
 
 <!ENTITY zotero.exportOptions.title "Eksportér...">
 <!ENTITY zotero.exportOptions.format.label "Format:">
@@ -223,22 +239,25 @@
 <!ENTITY zotero.integration.prefs.footnotes.label "Fodnoter">
 <!ENTITY zotero.integration.prefs.endnotes.label "Slutnoter">
 
-<!ENTITY zotero.integration.prefs.formatUsing.label "Formater ved hjælp af:">
+<!ENTITY zotero.integration.prefs.formatUsing.label "Gem henvisninger som:">
 <!ENTITY zotero.integration.prefs.bookmarks.label "Bogmærker">
-<!ENTITY zotero.integration.prefs.bookmarks.caption "Bogmærker bevares i både Microsoft Word og OpenOffice/LibreOffive, men kan blive ændret ved en fejl. Når denne mulighed er valgt, kan referencer ikke indsættes i fodnoter eller slutnoter.">
+<!ENTITY zotero.integration.prefs.bookmarks.caption "Bogmærker kan deles mellem Word og LibreOffice, men kan skabe fejl, hvis de utilsigtet ændres, og de kan ikke indsættes i fodnoter.">
 
+<!ENTITY zotero.integration.prefs.automaticCitationUpdates.label "Opdatér automatisk referencer">
+<!ENTITY zotero.integration.prefs.automaticCitationUpdates.tooltip "Referencer, som afventer opdatering, vil blive fremhævet i dokumentet.">
+<!ENTITY zotero.integration.prefs.automaticCitationUpdates.description "Ved at deaktivere opdateringer kan indsættelse af referencer i store dokumenter gøres hurtigere. Klik Opdatér for at opdatere referencer manuelt.">
 
-<!ENTITY zotero.integration.prefs.automaticJournalAbbeviations.label "Forkort automatisk tidsskrift-titler">
-<!ENTITY zotero.integration.prefs.automaticJournalAbbeviations.caption "MEDLINE-forkortelser genreres automatisk ud fra tidsskriftets titel. Feltet &quot;Tidsskr.forkort.&quot; ignoreres.">
+<!ENTITY zotero.integration.prefs.automaticJournalAbbeviations.label "Brug MEDLINE's tidsskriftforkortelser">
+<!ENTITY zotero.integration.prefs.automaticJournalAbbeviations.caption "Feltet “Journal Abbr” vil blive ignoreret.">
 
-<!ENTITY zotero.integration.prefs.storeReferences.label "Gem referencer i dokument">
-<!ENTITY zotero.integration.prefs.storeReferences.caption "At gemme referencer i dit dokument gør filen en anelse større, men det gør det også muligt at dele dokumentet med andre ved hjælp af en Zotero-gruppe. At opdatere dokumenter oprettet med denne funktion kræver Zotero 3.0 eller højere.">
+<!ENTITY zotero.integration.prefs.exportDocument "Switch to a Different Word Processor…">
 
 <!ENTITY zotero.integration.showEditor.label "Vis editor">
 <!ENTITY zotero.integration.classicView.label "Klassisk visning">
 
 <!ENTITY zotero.integration.references.label "Referencer i referenceliste">
 
+<!ENTITY zotero.sync.stop "Stop Sync">
 <!ENTITY zotero.sync.error "Synkroniseringsfejl">
 <!ENTITY zotero.sync.storage.progress "Fremdrift:">
 <!ENTITY zotero.sync.storage.downloads "Downloads:">
@@ -270,14 +289,10 @@
 <!ENTITY zotero.feedSettings.title.label "Titel:">
 <!ENTITY zotero.feedSettings.refresh.label1 "Opdatér nyhedsstrøm efter">
 <!ENTITY zotero.feedSettings.refresh.label2 "time(r)">
-<!ENTITY zotero.feedSettings.cleanupAfter.label1 "Fjern læste artikler efter">
-<!ENTITY zotero.feedSettings.cleanupAfter.label2 "dag(e)">
-
-
-<!ENTITY zotero.recognizePDF.recognizing.label "Henter metadata...">
-<!ENTITY zotero.recognizePDF.cancel.label "Fortryd">
-<!ENTITY zotero.recognizePDF.pdfName.label "PDF-filens navn">
-<!ENTITY zotero.recognizePDF.itemName.label "Elementets navn">
+<!ENTITY zotero.feedSettings.cleanupUnreadAfter.label1 "Fjern ulæste nyhedsstrømme efter">
+<!ENTITY zotero.feedSettings.cleanupUnreadAfter.label2 "dag(e)">
+<!ENTITY zotero.feedSettings.cleanupReadAfter.label1 "Fjern læste nyhedsstrømme efter">
+<!ENTITY zotero.feedSettings.cleanupReadAfter.label2 "dage(e)">
 
 <!ENTITY zotero.rtfScan.title "RTF-scanning">
 <!ENTITY zotero.rtfScan.cancel.label "Fortryd">
@@ -303,10 +318,6 @@
 
 <!ENTITY zotero.file.choose.label "Vælg fil...">
 <!ENTITY zotero.file.noneSelected.label "Der er ikke valgt en fil">
-
-<!ENTITY zotero.downloadManager.label "Gem til Zotero">
-<!ENTITY zotero.downloadManager.saveToLibrary.description "Vedhæftede filer kan ikke gemmes i det aktuelle bibliotek. I stedet gemmes hele elementet  i dit bibliotek.">
-<!ENTITY zotero.downloadManager.noPDFTools.description "For at bruge denne funktion skal du først installere PDF-værktøjerne i Zoteros indstillinger.">
 
 <!ENTITY zotero.attachLink.title "Tilføj link til URI">
 <!ENTITY zotero.attachLink.label.link "Link:">

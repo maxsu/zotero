@@ -59,6 +59,7 @@ var ZoteroAdvancedSearch = new function() {
 		
 		// A minimal implementation of Zotero.CollectionTreeRow
 		var collectionTreeRow = {
+			view: {},
 			ref: _searchBox.search,
 			isSearchMode: function() { return true; },
 			getItems: Zotero.Promise.coroutine(function* () {
@@ -70,6 +71,7 @@ var ZoteroAdvancedSearch = new function() {
 			isLibrary: function () { return false; },
 			isCollection: function () { return false; },
 			isSearch: function () { return true; },
+			isPublications: () => false,
 			isFeed: () => false,
 			isShare: function () { return false; },
 			isTrash: function () { return false; }
@@ -105,14 +107,16 @@ var ZoteroAdvancedSearch = new function() {
 		var promptService = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
 								.getService(Components.interfaces.nsIPromptService);
 		
-		var untitled = yield Zotero.DB.getNextName(
-			_searchBox.search.libraryID,
-			'savedSearches',
-			'savedSearchName',
-			Zotero.getString('pane.collections.untitled')
+		var libraryID = _searchBox.search.libraryID;
+		
+		var searches = yield Zotero.Searches.getAll(libraryID)
+		var prefix = Zotero.getString('pane.collections.untitled');
+		var name = Zotero.Utilities.Internal.getNextName(
+			prefix,
+			searches.map(s => s.name).filter(n => n.startsWith(prefix))
 		);
 		
-		var name = { value: untitled };
+		var name = { value: name };
 		var result = promptService.prompt(window,
 			Zotero.getString('pane.collections.newSavedSeach'),
 			Zotero.getString('pane.collections.savedSearchName'), name, "", {});

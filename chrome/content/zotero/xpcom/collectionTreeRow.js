@@ -25,19 +25,19 @@
 
 "use strict";
 
-Zotero.CollectionTreeRow = function(type, ref, level, isOpen)
-{
+Zotero.CollectionTreeRow = function (collectionTreeView, type, ref, level, isOpen) {
+	this.view = collectionTreeView;
 	this.type = type;
 	this.ref = ref;
 	this.level = level || 0
 	this.isOpen = isOpen || false;
+	this.onUnload = null;
 }
 
 
 Zotero.CollectionTreeRow.prototype.__defineGetter__('id', function () {
 	switch (this.type) {
 		case 'library':
-		case 'publications':
 		case 'group':
 		case 'feed':
 			return 'L' + this.ref.libraryID;
@@ -54,6 +54,12 @@ Zotero.CollectionTreeRow.prototype.__defineGetter__('id', function () {
 		case 'unfiled':
 			return 'U' + this.ref.libraryID;
 		
+		case 'retracted':
+			return 'R' + this.ref.libraryID;
+		
+		case 'publications':
+			return 'P' + this.ref.libraryID;
+			
 		case 'trash':
 			return 'T' + this.ref.libraryID;
 		
@@ -73,7 +79,7 @@ Zotero.CollectionTreeRow.prototype.__defineGetter__('id', function () {
 Zotero.CollectionTreeRow.prototype.isLibrary = function (includeGlobal)
 {
 	if (includeGlobal) {
-		var global = ['library', 'publications', 'group', 'feed'];
+		var global = ['library', 'group', 'feed'];
 		return global.indexOf(this.type) != -1;
 	}
 	return this.type == 'library';
@@ -95,6 +101,10 @@ Zotero.CollectionTreeRow.prototype.isDuplicates = function () {
 
 Zotero.CollectionTreeRow.prototype.isUnfiled = function () {
 	return this.type == 'unfiled';
+}
+
+Zotero.CollectionTreeRow.prototype.isRetracted = function () {
+	return this.type == 'retracted';
 }
 
 Zotero.CollectionTreeRow.prototype.isTrash = function()
@@ -159,7 +169,7 @@ Zotero.CollectionTreeRow.prototype.__defineGetter__('editable', function () {
 		return true;
 	}
 	var libraryID = this.ref.libraryID;
-	if (this.isCollection() || this.isSearch() || this.isDuplicates() || this.isUnfiled()) {
+	if (this.isCollection() || this.isSearch() || this.isDuplicates() || this.isUnfiled() || this.isRetracted()) {
 		var type = Zotero.Libraries.get(libraryID).libraryType;
 		if (type == 'group') {
 			var groupID = Zotero.Groups.getGroupIDFromLibraryID(libraryID);
@@ -182,7 +192,7 @@ Zotero.CollectionTreeRow.prototype.__defineGetter__('filesEditable', function ()
 	if (this.isGroup()) {
 		return this.ref.filesEditable;
 	}
-	if (this.isCollection() || this.isSearch() || this.isDuplicates() || this.isUnfiled()) {
+	if (this.isCollection() || this.isSearch() || this.isDuplicates() || this.isUnfiled() || this.isRetracted()) {
 		var type = Zotero.Libraries.get(libraryID).libraryType;
 		if (type == 'group') {
 			var groupID = Zotero.Groups.getGroupIDFromLibraryID(libraryID);
@@ -238,9 +248,21 @@ Zotero.CollectionTreeRow.prototype.getItems = Zotero.Promise.coroutine(function*
 	}
 	
 	var ids = yield this.getSearchResults();
+	
+	// Filter out items that exist in the items table (where search results come from) but that haven't
+	// yet been registered. This helps prevent unloaded-data crashes when switching collections while
+	// items are being added (e.g., during sync).
+	var len = ids.length;
+	ids = ids.filter(id => Zotero.Items.getLibraryAndKeyFromID(id));
+	if (len > ids.length) {
+		let diff = len - ids.length;
+		Zotero.debug(`Not showing ${diff} unloaded item${diff != 1 ? 's' : ''}`);
+	}
+	
 	if (!ids.length) {
 		return []
 	}
+	
 	return Zotero.Items.getAsync(ids);
 });
 
@@ -286,6 +308,18 @@ Zotero.CollectionTreeRow.prototype.getSearchObject = Zotero.Promise.coroutine(fu
 	}
 	else if (this.isDuplicates()) {
 		var s = yield this.ref.getSearchObject();
+		let tmpTable;
+		for (let id in s.conditions) {
+			let c = s.conditions[id];
+			if (c.condition == 'tempTable') {
+				tmpTable = c.value;
+				break;
+			}
+		}
+		// Called by ItemTreeView::unregister()
+		this.onUnload = async function () {
+			await Zotero.DB.queryAsync(`DROP TABLE IF EXISTS ${tmpTable}`);
+		};
 	}
 	else {
 		var s = new Zotero.Search();
@@ -303,6 +337,9 @@ Zotero.CollectionTreeRow.prototype.getSearchObject = Zotero.Promise.coroutine(fu
 			}
 			includeScopeChildren = true;
 		}
+		else if (this.isPublications()) {
+			s.addCondition('publications', 'true');
+		}
 		else if (this.isTrash()) {
 			s.addCondition('deleted', 'true');
 		}
@@ -313,6 +350,7 @@ Zotero.CollectionTreeRow.prototype.getSearchObject = Zotero.Promise.coroutine(fu
 	
 	// Create the outer (filter) search
 	var s2 = new Zotero.Search();
+	s2.addCondition('libraryID', 'is', this.ref.libraryID);
 	
 	if (this.isTrash()) {
 		s2.addCondition('deleted', 'true');
@@ -335,24 +373,28 @@ Zotero.CollectionTreeRow.prototype.getSearchObject = Zotero.Promise.coroutine(fu
 	return s2;
 });
 
+Zotero.CollectionTreeRow.prototype.getChildTags = function () {
+	Zotero.warn("Zotero.CollectionTreeRow::getChildTags() is deprecated -- use getTags() instead");
+	return this.getTags();
+};
 
 /**
  * Returns all the tags used by items in the current view
  *
- * @return {Promise}
+ * @return {Promise<Object[]>}
  */
-Zotero.CollectionTreeRow.prototype.getChildTags = Zotero.Promise.coroutine(function* () {
+Zotero.CollectionTreeRow.prototype.getTags = async function (types, tagIDs) {
 	switch (this.type) {
 		// TODO: implement?
 		case 'share':
-			return false;
+			return [];
 		
 		case 'bucket':
-			return false;
+			return [];
 	}
-	var results = yield this.getSearchResults();
-	return Zotero.Tags.getAllWithinItemsList(results);
-});
+	var results = await this.getSearchResults(true);
+	return Zotero.Tags.getAllWithin({ tmpTable: results, types, tagIDs });
+};
 
 
 Zotero.CollectionTreeRow.prototype.setSearch = function (searchText) {
@@ -371,6 +413,7 @@ Zotero.CollectionTreeRow.prototype.setTags = function (tags) {
 Zotero.CollectionTreeRow.prototype.isSearchMode = function() {
 	switch (this.type) {
 		case 'search':
+		case 'publications':
 		case 'trash':
 			return true;
 	}

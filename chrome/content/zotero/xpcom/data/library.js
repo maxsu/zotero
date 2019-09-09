@@ -48,6 +48,7 @@ Zotero.Library = function(params = {}) {
 			'libraryVersion',
 			'storageVersion',
 			'lastSync',
+			'archived'
 		]
 	);
 	
@@ -68,7 +69,7 @@ Zotero.Library = function(params = {}) {
 // DB columns
 Zotero.defineProperty(Zotero.Library, '_dbColumns', {
 	value: Object.freeze([
-		'type', 'editable', 'filesEditable', 'version', 'storageVersion', 'lastSync'
+		'type', 'editable', 'filesEditable', 'version', 'storageVersion', 'lastSync', 'archived'
 	])
 });
 
@@ -79,7 +80,7 @@ Zotero.Library._colToProp = function(c) {
 
 // Select all columns in a unique manner, so we can JOIN tables with same column names (e.g. version)
 Zotero.defineProperty(Zotero.Library, '_rowSQLSelect', {
-	value: "L.libraryID, " + Zotero.Library._dbColumns.map(function(c) "L." + c + " AS " + Zotero.Library._colToProp(c)).join(", ")
+	value: "L.libraryID, " + Zotero.Library._dbColumns.map(c => "L." + c + " AS " + Zotero.Library._colToProp(c)).join(", ")
 		+ ", (SELECT COUNT(*)>0 FROM collections C WHERE C.libraryID=L.libraryID) AS hasCollections"
 		+ ", (SELECT COUNT(*)>0 FROM savedSearches S WHERE S.libraryID=L.libraryID) AS hasSearches"
 });
@@ -102,27 +103,27 @@ Zotero.defineProperty(Zotero.Library.prototype, '_childObjectTypes', {
 
 // Valid library types
 Zotero.defineProperty(Zotero.Library.prototype, 'libraryTypes', {
-	value: Object.freeze(['user', 'publications'])
+	value: Object.freeze(['user'])
 });
 
 // Immutable libraries
 Zotero.defineProperty(Zotero.Library.prototype, 'fixedLibraries', {
-	value: Object.freeze(['user', 'publications'])
+	value: Object.freeze(['user'])
 });
 
 Zotero.defineProperty(Zotero.Library.prototype, 'libraryID', {
-	get: function() this._libraryID,
-	set: function(id) { throw new Error("Cannot change library ID") }
+	get: function() { return this._libraryID; },
+	set: function(id) { throw new Error("Cannot change library ID"); }
 });
 
 Zotero.defineProperty(Zotero.Library.prototype, 'id', {
-	get: function() this.libraryID,
-	set: function(val) this.libraryID = val
+	get: function() { return this.libraryID; },
+	set: function(val) { return this.libraryID = val; }
 });
 
 Zotero.defineProperty(Zotero.Library.prototype, 'libraryType', {
-	get: function() this._get('_libraryType'),
-	set: function(v) this._set('_libraryType', v)
+	get: function() { return this._get('_libraryType'); },
+	set: function(v) { return this._set('_libraryType', v); }
 });
 
 /**
@@ -135,21 +136,20 @@ Zotero.defineProperty(Zotero.Library.prototype, 'libraryTypeID', {
 	get: function () {
 		switch (this._libraryType) {
 		case 'user':
-		case 'publications':
 			return Zotero.Users.getCurrentUserID();
 		
 		case 'group':
 			return Zotero.Groups.getGroupIDFromLibraryID(this._libraryID);
 		
 		default:
-			throw new Error(`Cannot return library type id for ${this._libraryType} library`);
+			throw new Error(`Tried to get library type id for ${this._libraryType} library`);
 		}
 	}
 });
 
 Zotero.defineProperty(Zotero.Library.prototype, 'libraryVersion', {
-	get: function() this._get('_libraryVersion'),
-	set: function(v) this._set('_libraryVersion', v)
+	get: function() { return this._get('_libraryVersion'); },
+	set: function(v) { return this._set('_libraryVersion', v); }
 });
 
 
@@ -159,7 +159,7 @@ Zotero.defineProperty(Zotero.Library.prototype, 'syncable', {
 
 
 Zotero.defineProperty(Zotero.Library.prototype, 'lastSync', {
-	get: function() this._get('_libraryLastSync')
+	get: function() { return this._get('_libraryLastSync'); }
 });
 
 
@@ -169,10 +169,7 @@ Zotero.defineProperty(Zotero.Library.prototype, 'name', {
 			return Zotero.getString('pane.collections.library');
 		}
 		
-		if (this._libraryType == 'publications') {
-			return Zotero.getString('pane.collections.publications');
-		}
-		
+		// This property is provided by the extending objects (Group, Feed) for other library types
 		throw new Error('Unhandled library type "' + this._libraryType + '"');
 	}
 });
@@ -193,14 +190,18 @@ Zotero.defineProperty(Zotero.Library.prototype, 'hasTrash', {
 	value: true
 });
 
+Zotero.defineProperty(Zotero.Library.prototype, 'allowsLinkedFiles', {
+	value: true
+});
+
 // Create other accessors
 (function() {
-	let accessors = ['editable', 'filesEditable', 'storageVersion'];
+	let accessors = ['editable', 'filesEditable', 'storageVersion', 'archived'];
 	for (let i=0; i<accessors.length; i++) {
 		let prop = Zotero.Library._colToProp(accessors[i]);
 		Zotero.defineProperty(Zotero.Library.prototype, accessors[i], {
-			get: function() this._get(prop),
-			set: function(v) this._set(prop, v)
+			get: function() { return this._get(prop); },
+			set: function(v) { return this._set(prop, v); }
 		})
 	}
 })()
@@ -250,13 +251,20 @@ Zotero.Library.prototype._set = function(prop, val) {
 				throw new Error('Cannot create library of type "' + val + '"');
 			}
 			break;
+		
 		case '_libraryEditable':
 		case '_libraryFilesEditable':
-			if (['user', 'publications'].indexOf(this._libraryType) != -1) {
+			if (['user'].indexOf(this._libraryType) != -1) {
 				throw new Error('Cannot change ' + prop + ' for ' + this._libraryType + ' library');
 			}
 			val = !!val;
+			
+			// Setting 'editable' to false should also set 'filesEditable' to false
+			if (prop == '_libraryEditable' && !val) {
+				this._set('_libraryFilesEditable', false);
+			}
 			break;
+		
 		case '_libraryVersion':
 			var newVal = Number.parseInt(val, 10);
 			if (newVal != val) {
@@ -293,6 +301,16 @@ Zotero.Library.prototype._set = function(prop, val) {
 				val = new Date(Math.floor(val.getTime()/1000) * 1000);
 			}
 			break;
+		
+		case '_libraryArchived':
+			if (['user', 'feeds'].indexOf(this._libraryType) != -1) {
+				throw new Error('Cannot change ' + prop + ' for ' + this._libraryType + ' library');
+			}
+			if (val && this._libraryEditable) {
+				throw new Error('Cannot set editable library as archived');
+			}
+			val = !!val;
+			break;
 	}
 	
 	if (this[prop] == val) return; // Unchanged
@@ -319,6 +337,7 @@ Zotero.Library.prototype._loadDataFromRow = function(row) {
 	this._libraryVersion = row._libraryVersion;
 	this._libraryStorageVersion = row._libraryStorageVersion;
 	this._libraryLastSync =  row._libraryLastSync !== 0 ? new Date(row._libraryLastSync * 1000) : false;
+	this._libraryArchived = !!row._libraryArchived;
 	
 	this._hasCollections = !!row.hasCollections;
 	this._hasSearches = !!row.hasSearches;
@@ -431,6 +450,9 @@ Zotero.Library.prototype.save = Zotero.Promise.coroutine(function* (options) {
 	
 	try {
 		env.notifierData = {};
+		if (env.options.skipSelect) {
+			env.notifierData.skipSelect = true;
+		}
 		
 		// Create transaction
 		if (env.options.tx) {
@@ -514,7 +536,7 @@ Zotero.Library.prototype._saveData = Zotero.Promise.coroutine(function* (env) {
 		this._libraryID = id;
 	} else if (changedCols.length) {
 		params.push(this.libraryID);
-		let sql = "UPDATE libraries SET " + changedCols.map(function(v) v + "=?").join(", ")
+		let sql = "UPDATE libraries SET " + changedCols.map(v => v + "=?").join(", ")
 			+ " WHERE libraryID=?";
 		yield Zotero.DB.queryAsync(sql, params);
 		
@@ -599,11 +621,43 @@ Zotero.Library.prototype._initErase = Zotero.Promise.method(function(env) {
 	return true;
 });
 
-Zotero.Library.prototype._eraseData = Zotero.Promise.coroutine(function* (env) {
-	yield Zotero.DB.queryAsync("DELETE FROM libraries WHERE libraryID=?", this.libraryID);
+Zotero.Library.prototype._eraseData = async function (env) {
+	// Delete attachment files
+	var attachmentKeys = await Zotero.DB.columnQueryAsync(
+		"SELECT key FROM items WHERE libraryID=? AND itemID IN "
+			+ "(SELECT itemID FROM itemAttachments WHERE linkMode IN (?, ?))",
+		[
+			this.libraryID,
+			Zotero.Attachments.LINK_MODE_IMPORTED_FILE,
+			Zotero.Attachments.LINK_MODE_IMPORTED_URL
+		]
+	);
+	if (attachmentKeys.length) {
+		Zotero.DB.addCurrentCallback('commit', async function () {
+			for (let key of attachmentKeys) {
+				try {
+					let dir = Zotero.Attachments.getStorageDirectoryByLibraryAndKey(
+						this.libraryID, key
+					).path;
+					await OS.File.removeDir(
+						dir,
+						{
+							ignoreAbsent: true,
+							ignorePermissions: true
+						}
+					);
+				}
+				catch (e) {
+					Zotero.logError(e);
+				}
+			}
+		}.bind(this));
+	}
+	
+	await Zotero.DB.queryAsync("DELETE FROM libraries WHERE libraryID=?", this.libraryID);
 	// TODO: Emit event so this doesn't have to be here
-	yield Zotero.Fulltext.clearLibraryVersion(this.libraryID);
-});
+	await Zotero.Fulltext.clearLibraryVersion(this.libraryID);
+};
 
 Zotero.Library.prototype._finalizeErase = Zotero.Promise.coroutine(function* (env) {
 	Zotero.Libraries.unregister(this.libraryID);
@@ -649,6 +703,10 @@ Zotero.Library.prototype.hasItems = Zotero.Promise.coroutine(function* () {
 		throw new Error("Library is not saved yet");
 	}
 	let sql = 'SELECT COUNT(*)>0 FROM items WHERE libraryID=?';
+	// Don't count old <=4.0 Quick Start Guide items
+	if (this.libraryID == Zotero.Libraries.userLibraryID) {
+		sql += "AND key NOT IN ('ABCD2345', 'ABCD3456')";
+	}
 	return !!(yield Zotero.DB.valueQueryAsync(sql, this.libraryID));
 });
 

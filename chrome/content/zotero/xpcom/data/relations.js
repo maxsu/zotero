@@ -32,7 +32,8 @@ Zotero.Relations = new function () {
 	
 	this._namespaces = {
 		dc: 'http://purl.org/dc/elements/1.1/',
-		owl: 'http://www.w3.org/2002/07/owl#'
+		owl: 'http://www.w3.org/2002/07/owl#',
+		mendeleyDB: 'http://zotero.org/namespaces/mendeleyDB#'
 	};
 	
 	var _types = ['collection', 'item'];
@@ -146,7 +147,7 @@ Zotero.Relations = new function () {
 	 * @return {Object[]} - An array of objects with a Zotero.DataObject as 'subject'
 	 *     and a predicate string as 'predicate'
 	 */
-	this.getByObject = function (objectType, object) {
+	this.getByObject = Zotero.Promise.coroutine(function* (objectType, object) {
 		var objectsClass = Zotero.DataObjectUtilities.getObjectsClassForObjectType(objectType);
 		var predicateIDs = [];
 		var o = _subjectPredicatesByObject[objectType]
@@ -156,32 +157,64 @@ Zotero.Relations = new function () {
 		}
 		var toReturn = [];
 		for (let predicateID in o) {
-			o[predicateID].forEach(subjectID => toReturn.push({
-				subject: objectsClass.get(subjectID),
-				predicate: Zotero.RelationPredicates.getName(predicateID)
-			}));
+			for (let subjectID of o[predicateID]) {
+				var subject = yield objectsClass.getAsync(subjectID);
+				toReturn.push({
+					subject: subject,
+					predicate: Zotero.RelationPredicates.getName(predicateID)
+				});
+			};
 		}
 		return toReturn;
+	});
+	
+	
+	/**
+	 * For every relation pointing to a given object, create a relation on the subject pointing to a
+	 * new object
+	 *
+	 * @param {Zotero.DataObject} fromObject
+	 * @param {Zotero.DataObject} toObject
+	 * @return {Promise}
+	 */
+	this.copyObjectSubjectRelations = async function (fromObject, toObject) {
+		var objectType = fromObject.objectType;
+		var ObjectType = Zotero.Utilities.capitalize(objectType);
+		var fromObjectURI = Zotero.URI[`get${ObjectType}URI`](fromObject);
+		var toObjectURI = Zotero.URI[`get${ObjectType}URI`](toObject);
+		var subjectPredicates = await Zotero.Relations.getByObject(objectType, fromObjectURI);
+		for (let { subject, predicate } of subjectPredicates) {
+			if (subject.isEditable()) {
+				subject.addRelation(predicate, toObjectURI);
+				await subject.saveTx({
+					skipDateModifiedUpdate: true
+				});
+			}
+			else {
+				Zotero.debug(`Subject ${objectType} ${subject.libraryKey} is not editable `
+					+ `-- not copying ${predicate} relation`);
+			}
+		}
 	};
 	
 	
-	this.updateUser = Zotero.Promise.coroutine(function* (toUserID) {
-		var fromUserID = Zotero.Users.getCurrentUserID();
+	this.updateUser = Zotero.Promise.coroutine(function* (fromUserID, toUserID) {
 		if (!fromUserID) {
 			fromUserID = "local/" + Zotero.Users.getLocalUserKey();
 		}
 		if (!toUserID) {
 			throw new Error("Invalid target userID " + toUserID);
 		}
+		
 		Zotero.DB.requireTransaction();
 		for (let type of _types) {
 			let sql = `SELECT DISTINCT object FROM ${type}Relations WHERE object LIKE ?`;
 			let objects = yield Zotero.DB.columnQueryAsync(
 				sql, 'http://zotero.org/users/' + fromUserID + '/%'
 			);
-			Zotero.DB.addCurrentCallback("commit", function () {
+			Zotero.DB.addCurrentCallback("commit", function* () {
 				for (let object of objects) {
-					let subPrefs = this.getByObject(type, object);
+					let subPrefs = yield this.getByObject(type, object);
 					let newObject = object.replace(
 						new RegExp("^http://zotero.org/users/" + fromUserID + "/(.*)"),
 						"http://zotero.org/users/" + toUserID + "/$1"
@@ -232,7 +265,7 @@ Zotero.Relations = new function () {
 				// removing
 				if (uri.indexOf(prefix) != -1
 						&& uri.indexOf("/" + type + "s/") != -1
-						&& !Zotero.URI[getFunc](uri)) {
+						&& !(yield Zotero.URI[getFunc](uri))) {
 					if (!objects[row.id]) {
 						objects[row.id] = yield objectsClass.getAsync(row.id, { noCache: true });
 					}

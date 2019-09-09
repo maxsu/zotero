@@ -27,7 +27,9 @@ var Zotero_CSL_Editor = new function() {
 	this.init = init;
 	this.handleKeyPress = handleKeyPress;
 	this.loadCSL = loadCSL;
-	function init() {
+	async function init() {
+		await Zotero.Schema.schemaUpdatePromise;
+		
 		Zotero.Styles.populateLocaleList(document.getElementById("locale-menu"));
 		
 		var cslList = document.getElementById('zotero-csl-list');
@@ -35,9 +37,9 @@ var Zotero_CSL_Editor = new function() {
 		
 		var lastStyle = Zotero.Prefs.get('export.lastStyle');
 		
-		var styles = Zotero.Styles.getAll();
+		var styles = Zotero.Styles.getVisible();
 		var currentStyle = null;
-		for each(var style in styles) {
+		for (let style of styles) {
 			if (style.source) {
 				continue;
 			}
@@ -119,7 +121,7 @@ var Zotero_CSL_Editor = new function() {
 	function loadCSL(cslID) {
 		var editor = document.getElementById('zotero-csl-editor');
 		var style = Zotero.Styles.get(cslID);
-		editor.value = Zotero.File.getContents(style.file);
+		editor.value = style.getXML();
 		editor.cslID = cslID;
 		editor.doCommand();
 		document.getElementById('zotero-csl-list').value = cslID;
@@ -157,6 +159,7 @@ var Zotero_CSL_Editor = new function() {
 	
 	this.generateBibliography = function(style) {
 		var iframe = document.getElementById('zotero-csl-preview-box');
+		var editor = document.getElementById('zotero-csl-editor');
 		
 		var items = Zotero.getActiveZoteroPane().getSelectedItems();
 		if (items.length == 0) {
@@ -228,6 +231,7 @@ var Zotero_CSL_Editor = new function() {
 				iframe.contentDocument.documentElement.innerHTML = '<div>' + Zotero.getString('styles.editor.warning.renderError') + '</div><div>'+e+'</div>';
 				throw e;
 		}
+		editor.styleEngine = styleEngine;
 	}
 	
 	

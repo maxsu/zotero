@@ -39,41 +39,30 @@ Zotero.Sync.EventListeners.ChangeListener = new function () {
 			return;
 		}
 		
-		var syncSQL = "REPLACE INTO syncDeleteLog (syncObjectTypeID, libraryID, key) "
-			+ "VALUES (?, ?, ?)";
-		var storageSQL = "REPLACE INTO storageDeleteLog (libraryID, key) VALUES (?, ?)";
+		var syncSQL = "REPLACE INTO syncDeleteLog (syncObjectTypeID, libraryID, key) VALUES ";
+		var storageSQL = "REPLACE INTO storageDeleteLog (libraryID, key) VALUES ";
 		
 		var storageForLibrary = {};
 		
 		return Zotero.Utilities.Internal.forEachChunkAsync(
 			ids,
 			100,
-			function (chunk) {
-				return Zotero.DB.executeTransaction(function* () {
-					for (let id of chunk) {
-						if (extraData[id] && extraData[id].skipDeleteLog) {
-							continue;
-						}
-						
+			async function (chunk) {
+				var syncSets = [];
+				var storageSets = [];
+				chunk
+					.filter(id => !extraData[id] || !extraData[id].skipDeleteLog)
+					.forEach(id => {
 						if (type == 'setting') {
 							var [libraryID, key] = id.split("/");
 						}
 						else {
 							var { libraryID, key } = extraData[id];
 						}
-						
 						if (!key) {
 							throw new Error("Key not provided in notifier object");
 						}
-						
-						yield Zotero.DB.queryAsync(
-							syncSQL,
-							[
-								syncObjectTypeID,
-								libraryID,
-								key
-							]
-						);
+						syncSets.push(syncObjectTypeID, libraryID, key);
 						
 						if (type == 'item') {
 							if (storageForLibrary[libraryID] === undefined) {
@@ -81,17 +70,28 @@ Zotero.Sync.EventListeners.ChangeListener = new function () {
 									Zotero.Sync.Storage.Local.getModeForLibrary(libraryID) == 'webdav';
 							}
 							if (storageForLibrary[libraryID] && extraData[id].storageDeleteLog) {
-								yield Zotero.DB.queryAsync(
-									storageSQL,
-									[
-										libraryID,
-										key
-									]
-								);
+								storageSets.push(libraryID, key);
 							}
 						}
-					}
-				});
+					});
+				
+				if (storageSets.length) {
+					return Zotero.DB.executeTransaction(function* () {
+						yield Zotero.DB.queryAsync(
+							syncSQL + Array(syncSets.length / 3).fill('(?, ?, ?)').join(', '),
+							syncSets
+						);
+						yield Zotero.DB.queryAsync(
+							storageSQL + Array(storageSets.length / 2).fill('(?, ?)').join(', '),
+							storageSets
+						);
+					});
+				}
+				else if (syncSets.length) {
+					await Zotero.DB.queryAsync(
+						syncSQL + Array(syncSets.length / 3).fill('(?, ?, ?)').join(', '), syncSets
+					);
+				}
 			}
 		);
 	});
@@ -126,27 +126,25 @@ Zotero.Sync.EventListeners.AutoSyncListener = {
 		// Only trigger sync for certain types
 		//
 		// TODO: settings, full text
-		if (Zotero.DataObjectUtilities.getTypes().indexOf(type) == -1) {
+		if (!Zotero.DataObjectUtilities.getTypes().includes(type)) {
 			return;
 		}
 		
 		// Determine affected libraries so only those can be synced
-		let libraryIDs = new Set();
-		if (Zotero.DataObjectUtilities.getTypes().indexOf(type) != -1) {
-			let objectsClass = Zotero.DataObjectUtilities.getObjectsClassForObjectType(type);
-			ids.forEach(id => {
-				let lk = objectsClass.getLibraryAndKeyFromID(id);
-				if (lk && Zotero.Libraries.get(lk.libraryID).syncable) {
-					libraryIDs.add(lk.libraryID);
+		let libraries = [];
+		let objectsClass = Zotero.DataObjectUtilities.getObjectsClassForObjectType(type);
+		ids.forEach(id => {
+			let lk = objectsClass.getLibraryAndKeyFromID(id);
+			if (lk) {
+				let library = Zotero.Libraries.get(lk.libraryID);
+				if (library.syncable) {
+					libraries.push(library);
 				}
-			});
-		}
+			}
+		});
 		
-		// Don't include skipped libraries
-		var skipped = new Set(Zotero.Sync.Data.Local.getSkippedLibraries());
-		libraryIDs = Array.from(libraryIDs.values()).filter(id => !skipped.has(id));
-		
-		if (!libraryIDs.length) {
+		libraries = Zotero.Sync.Data.Local.filterSkippedLibraries(libraries);
+		if (!libraries.length) {
 			return;
 		}
 		
@@ -154,7 +152,7 @@ Zotero.Sync.EventListeners.AutoSyncListener = {
 			this._editTimeout,
 			false,
 			{
-				libraries: libraryIDs
+				libraries: libraries.map(library => library.libraryID)
 			}
 		);
 	},
@@ -226,7 +224,7 @@ Zotero.Sync.EventListeners.IdleListener = {
 	
 	_backObserver: {
 		observe: function (subject, topic, data) {
-			if (topic != 'back') {
+			if (topic !== 'active') {
 				return;
 			}
 			

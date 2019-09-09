@@ -29,7 +29,8 @@
  * Custom parameters:
  * - name - name of the feed displayed in the collection tree
  * - url
- * - cleanupAfter - number of days after which read items should be removed
+ * - cleanupReadAfter - number of days after which read items should be removed
+ * - cleanupUnreadAfter - number of days after which unread items should be removed
  * - refreshInterval - in terms of hours
  * 
  * @param params
@@ -39,24 +40,28 @@
 Zotero.Feed = function(params = {}) {
 	params.libraryType = 'feed';
 	Zotero.Feed._super.call(this, params);
-	
-	this._feedCleanupAfter = null;
+
+	this._feedCleanupReadAfter = null;
+	this._feedCleanupUnreadAfter = null;
 	this._feedRefreshInterval = null;
+	this._feedUnreadCount = null;
+	this._updating = false;
+	this._previousURL = null;
 
 	// Feeds are not editable by the user. Remove the setter
 	this.editable = false;
 	Zotero.defineProperty(this, 'editable', {
-		get: function() this._get('_libraryEditable')
+		get: function() { return this._get('_libraryEditable'); }
 	});
 
 	// Feeds are not filesEditable by the user. Remove the setter
 	this.filesEditable = false;
 	Zotero.defineProperty(this, 'filesEditable', {
-		get: function() this._get('_libraryFilesEditable')
+		get: function() { return this._get('_libraryFilesEditable'); }
 	});
 	
 	Zotero.Utilities.assignProps(this, params, 
-		['name', 'url', 'refreshInterval', 'cleanupAfter']);
+		['name', 'url', 'refreshInterval', 'cleanupReadAfter', 'cleanupUnreadAfter']);
 	
 	// Return a proxy so that we can disable the object once it's deleted
 	return new Proxy(this, {
@@ -67,10 +72,6 @@ Zotero.Feed = function(params = {}) {
 			return obj[prop];
 		}
 	});
-	this._feedUnreadCount = null;
-	
-	this._updating = false;
-	this._previousURL = null;
 }
 
 Zotero.Feed._colToProp = function(c) {
@@ -86,7 +87,7 @@ Zotero.defineProperty(Zotero.Feed, '_unreadCountSQL', {
 
 Zotero.defineProperty(Zotero.Feed, '_dbColumns', {
 	value: Object.freeze(['name', 'url', 'lastUpdate', 'lastCheck',
-		'lastCheckError', 'cleanupAfter', 'refreshInterval'])
+		'lastCheckError', 'cleanupUnreadAfter', 'cleanupReadAfter', 'refreshInterval'])
 });
 
 Zotero.defineProperty(Zotero.Feed, '_primaryDataSQLParts');
@@ -110,25 +111,34 @@ Zotero.defineProperty(Zotero.Feed.prototype, 'isFeed', {
 	value: true
 });
 
+Zotero.defineProperty(Zotero.Feed.prototype, 'allowsLinkedFiles', {
+	value: false
+});
+
 Zotero.defineProperty(Zotero.Feed.prototype, 'libraryTypes', {
 	value: Object.freeze(Zotero.Feed._super.prototype.libraryTypes.concat(['feed']))
 });
+
+Zotero.defineProperty(Zotero.Feed.prototype, 'libraryTypeID', {
+	get: () => undefined
+});
+
 Zotero.defineProperty(Zotero.Feed.prototype, 'unreadCount', {
-	get: function() this._feedUnreadCount
+	get: function() { return this._feedUnreadCount; }
 });
 Zotero.defineProperty(Zotero.Feed.prototype, 'updating', {
-	get: function() !!this._updating,
+	get: function() { return !!this._updating; }
 });
 
 (function() {
 // Create accessors
-let accessors = ['name', 'url', 'refreshInterval', 'cleanupAfter'];
+let accessors = ['name', 'url', 'refreshInterval', 'cleanupUnreadAfter', 'cleanupReadAfter'];
 for (let i=0; i<accessors.length; i++) {
 	let name = accessors[i];
 	let prop = Zotero.Feed._colToProp(name);
 	Zotero.defineProperty(Zotero.Feed.prototype, name, {
-		get: function() this._get(prop),
-		set: function(v) this._set(prop, v)
+		get: function() { return this._get(prop); },
+		set: function(v) { return this._set(prop, v); }
 	})
 }
 let getters = ['lastCheck', 'lastUpdate', 'lastCheckError'];
@@ -136,7 +146,7 @@ for (let i=0; i<getters.length; i++) {
 	let name = getters[i];
 	let prop = Zotero.Feed._colToProp(name);
 	Zotero.defineProperty(Zotero.Feed.prototype, name, {
-		get: function() this._get(prop),
+		get: function() { return this._get(prop); }
 	})
 }
 })()
@@ -183,12 +193,13 @@ Zotero.Feed.prototype._set = function (prop, val) {
 			this._previousURL = this.url;
 			break;
 		case '_feedRefreshInterval':
-		case '_feedCleanupAfter':
+		case '_feedCleanupReadAfter':
+		case '_feedCleanupUnreadAfter':
 			if (val === null) break;
 			
 			let newVal = Number.parseInt(val, 10);
 			if (newVal != val || !newVal || newVal <= 0) {
-				throw new Error(prop + " must be null or a positive integer");
+				throw new Error(`${prop} must be null or a positive integer, but is ${val}`);
 			}
 			break;
 		case '_feedLastCheckError':
@@ -198,7 +209,7 @@ Zotero.Feed.prototype._set = function (prop, val) {
 			}
 			
 			if (typeof val !== 'string') {
-				throw new Error(prop + " must be null or a string");
+				throw new Error(`${prop} must be null or a string, but is ${val}`);
 			}
 			break;
 	}
@@ -214,7 +225,8 @@ Zotero.Feed.prototype._loadDataFromRow = function(row) {
 	this._feedLastCheckError = row._feedLastCheckError || null;
 	this._feedLastCheck = row._feedLastCheck || null;
 	this._feedLastUpdate = row._feedLastUpdate || null;
-	this._feedCleanupAfter = parseInt(row._feedCleanupAfter) || null;
+	this._feedCleanupReadAfter = parseInt(row._feedCleanupReadAfter) || null;
+	this._feedCleanupUnreadAfter = parseInt(row._feedCleanupUnreadAfter) || null;
 	this._feedRefreshInterval = parseInt(row._feedRefreshInterval) || null;
 	this._feedUnreadCount = parseInt(row._feedUnreadCount);
 }
@@ -236,7 +248,8 @@ Zotero.Feed.prototype._initSave = Zotero.Promise.coroutine(function* (env) {
 	if (!this._feedName) throw new Error("Feed name not set");
 	if (!this._feedUrl) throw new Error("Feed URL not set");
 	if (!this.refreshInterval) this.refreshInterval = Zotero.Prefs.get('feeds.defaultTTL') * 60;
-	if (!this.cleanupAfter) this.cleanupAfter = Zotero.Prefs.get('feeds.defaultCleanupAfter');
+	if (!this.cleanupReadAfter) this.cleanupReadAfter = Zotero.Prefs.get('feeds.defaultCleanupReadAfter');
+	if (!this.cleanupUnreadAfter) this.cleanupUnreadAfter = Zotero.Prefs.get('feeds.defaultCleanupUnreadAfter');
 	
 	if (env.isNew) {
 		// Make sure URL is unique
@@ -272,7 +285,9 @@ Zotero.Feed.prototype._saveData = Zotero.Promise.coroutine(function* (env) {
 			+ "VALUES (" + Array(params.length).fill('?').join(', ') + ")";
 		yield Zotero.DB.queryAsync(sql, params);
 		
-		Zotero.Notifier.queue('add', 'feed', this.libraryID, env.options.notifierQueue);
+		Zotero.Notifier.queue(
+			'add', 'feed', this.libraryID, env.notifierData, env.options.notifierQueue
+		);
 	}
 	else if (changedCols.length) {
 		let sql = "UPDATE feeds SET " + changedCols.map(v => v + '=?').join(', ')
@@ -281,7 +296,9 @@ Zotero.Feed.prototype._saveData = Zotero.Promise.coroutine(function* (env) {
 		yield Zotero.DB.queryAsync(sql, params);
 		
 		if (!env.options.skipNotifier) {
-			Zotero.Notifier.queue('modify', 'feed', this.libraryID, env.options.notifierQueue);
+			Zotero.Notifier.queue(
+				'modify', 'feed', this.libraryID, env.notifierData, env.options.notifierQueue
+			);
 		}
 	}
 	else {
@@ -291,7 +308,7 @@ Zotero.Feed.prototype._saveData = Zotero.Promise.coroutine(function* (env) {
 
 Zotero.Feed.prototype._finalizeSave = Zotero.Promise.coroutine(function* (env) {
 	let syncedDataChanged = 
-		['_feedName', '_feedCleanupAfter', '_feedRefreshInterval'].some((val) => this._changed[val]);
+		['_feedName', '_feedCleanupReadAfter', '_feedCleanupUnreadAfter', '_feedRefreshInterval'].some((val) => this._changed[val]);
 
 	yield Zotero.Feed._super.prototype._finalizeSave.apply(this, arguments);
 	
@@ -341,7 +358,7 @@ Zotero.Feed.prototype.erase = Zotero.Promise.coroutine(function* (options = {}) 
 
 Zotero.Feed.prototype.storeSyncedSettings = Zotero.Promise.coroutine(function* () {
 	let syncedFeeds = Zotero.SyncedSettings.get(Zotero.Libraries.userLibraryID, 'feeds') || {};
-	syncedFeeds[this.url] = [this.name, this.cleanupAfter, this.refreshInterval];
+	syncedFeeds[this.url] = [this.name, this.cleanupReadAfter, this.cleanupUnreadAfter, this.refreshInterval];
 	return Zotero.SyncedSettings.set(Zotero.Libraries.userLibraryID, 'feeds', syncedFeeds);
 });
 
@@ -349,15 +366,17 @@ Zotero.Feed.prototype.getExpiredFeedItemIDs = Zotero.Promise.coroutine(function*
 	let sql = "SELECT itemID AS id FROM feedItems "
 		+ "LEFT JOIN items I USING (itemID) "
 		+ "WHERE I.libraryID=? "
-		+ "AND readTime IS NOT NULL "
-		+ "AND julianday('now', 'utc') - (julianday(readTime, 'utc') + ?) > 0";
-	return Zotero.DB.columnQueryAsync(sql, [this.id, {int: this.cleanupAfter}]);
+		+ "AND ("
+			+ "(readTime IS NOT NULL AND julianday('now', 'utc') - (julianday(readTime, 'utc') + ?) > 0) "
+			+ "OR (readTime IS NULL AND julianday('now', 'utc') - (julianday(dateModified, 'utc') + ?) > 0)"
+		+ ")";
+	return Zotero.DB.columnQueryAsync(sql, [this.id, {int: this.cleanupReadAfter}, {int: this.cleanupUnreadAfter}]);
 });
 
 /**
  * Clearing conditions for an item:
- * - Has been read at least feed.cleanupAfter earlier AND
- * - Does not exist in the RSS feed anymore
+ * - Has been read at least feed.cleanupReadAfter earlier OR is unread and older than feed.cleanupUnreadAfter
+ * - AND Does not exist in the RSS feed anymore
  * 
  * If we clear items once they've been read, we may potentially end up
  * with empty feeds for those that do not update very frequently.
@@ -366,24 +385,22 @@ Zotero.Feed.prototype.clearExpiredItems = Zotero.Promise.coroutine(function* (it
 	itemsInFeedIDs = itemsInFeedIDs || new Set();
 	try {
 		// Clear expired items
-		if (this.cleanupAfter) {
-			let expiredItems = yield this.getExpiredFeedItemIDs();
-			let toClear = expiredItems;
-			if (itemsInFeedIDs.size) {
-				toClear = [];
-				for (let id of expiredItems) {
-					if (!itemsInFeedIDs.has(id)) {
-						toClear.push(id);
-					}
+		let expiredItems = yield this.getExpiredFeedItemIDs();
+		let toClear = expiredItems;
+		if (itemsInFeedIDs.size) {
+			toClear = [];
+			for (let id of expiredItems) {
+				if (!itemsInFeedIDs.has(id)) {
+					toClear.push(id);
 				}
 			}
-			Zotero.debug("Clearing up read feed items...");
-			if (toClear.length) {
-				Zotero.debug(toClear.join(', '));
-				yield Zotero.FeedItems.erase(toClear);
-			} else {
-				Zotero.debug("No expired feed items");
-			}
+		}
+		Zotero.debug("Clearing up read feed items...");
+		if (toClear.length) {
+			Zotero.debug(toClear.join(', '));
+			yield Zotero.FeedItems.erase(toClear);
+		} else {
+			Zotero.debug("No expired feed items");
 		}
 	} catch(e) {
 		Zotero.debug("Error clearing expired feed items");

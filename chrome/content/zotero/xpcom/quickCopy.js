@@ -26,39 +26,54 @@
 "use strict";
 
 Zotero.QuickCopy = new function() {
+	this.lastActiveURL = null;
+	
 	var _initTimeoutID
 	var _initPromise;
 	var _initialized = false;
+	var _initCancelled = false;
 	var _siteSettings;
 	var _formattedNames;
 	
 	this.init = Zotero.Promise.coroutine(function* () {
-		yield this.loadSiteSettings();
-		
-		// Load code for selected export translator ahead of time
-		// (in the background, because it requires translator initialization)
-		_initTimeoutID = setTimeout(() => {
-			_initTimeoutID = null;
-			_initPromise = _loadOutputFormat().then(() => _initPromise = null);
-		}, 5000);
+		Zotero.debug("Initializing Quick Copy");
 		
 		if (!_initialized) {
-			Zotero.Prefs.registerObserver("export.quickCopy.setting", () => _loadOutputFormat());
+			// Make sure export translator code is loaded whenever the output format changes
+			this._prefObserverID = Zotero.Prefs.registerObserver(
+				"export.quickCopy.setting", _loadOutputFormat
+			);
 			_initialized = true;
 		}
+		
+		// Load code for selected export translators ahead of time
+		// (in the background, because it requires translator initialization)
+		Zotero.Schema.schemaUpdatePromise
+		.then(function () {
+			if (_initCancelled) return;
+			
+			// Avoid random translator initialization during tests, which can result in timeouts,
+			// if an export format is selected
+			if (Zotero.test) return;
+			
+			_initPromise = Zotero.Promise.each(
+				[
+					() => _loadOutputFormat(),
+					() => this.loadSiteSettings()
+				],
+				f => f()
+			);
+		}.bind(this));
 	});
 	
 	
 	this.uninit = function () {
-		// Cancel load if not yet done
-		if (_initTimeoutID) {
-			clearTimeout(_initTimeoutID);
-			_initTimeoutID = null
-		}
+		_initCancelled = true;
 		// Cancel load if in progress
 		if (_initPromise) {
 			_initPromise.cancel();
 		}
+		Zotero.Prefs.unregisterObserver(this._prefObserverID);
 	};
 	
 	
@@ -67,8 +82,19 @@ Zotero.QuickCopy = new function() {
 			+ "WHERE setting='quickCopySite'";
 		var rows = yield Zotero.DB.queryAsync(sql);
 		// Unproxify storage row
-		_siteSettings = [for (row of rows) { domainPath: row.domainPath, format: row.format }];
+		_siteSettings = rows.map(row => {
+			return {
+				domainPath: row.domainPath,
+				format: row.format 
+			};
+		});
+		yield Zotero.Promise.map(rows, row => _preloadFormat(row.format));
 	});
+	
+	
+	this.hasSiteSettings = function () {
+		return _siteSettings && _siteSettings.length > 0;
+	};
 	
 	
 	/*
@@ -140,11 +166,9 @@ Zotero.QuickCopy = new function() {
 			return quickCopyPref;
 		}
 		
-		var ioService = Components.classes["@mozilla.org/network/io-service;1"]
-			.getService(Components.interfaces.nsIIOService);
 		var nsIURI;
 		try {
-			nsIURI = ioService.newURI(url, null, null);
+			nsIURI = Services.io.newURI(url, null, null);
 			// Accessing some properties may throw for URIs that do not support those
 			// parts. E.g. hostPort throws NS_ERROR_FAILURE for about:blank
 			var urlHostPort = nsIURI.hostPort;
@@ -158,30 +182,16 @@ Zotero.QuickCopy = new function() {
 		}
 		
 		if (!_siteSettings) {
-			throw new Zotero.Exception.UnloadedDataException("Quick Copy site settings not loaded");
+			Zotero.debug("Quick Copy site settings not loaded", 2);
+			return quickCopyPref;
 		}
 		
 		var matches = [];
-		// Match last one or two sections of domain, not counting trailing period
-		var urlDomain = urlHostPort.match(/(?:[^.]+\.)?[^.]+(?=\.?$)/);
-		// Hopefully can't happen, but until we're sure
-		if (!urlDomain) {
-			Zotero.logError("Quick Copy host '" + urlHostPort + "' not matched");
-			return quickCopyPref;
-		}
 		for (let i=0; i<_siteSettings.length; i++) {
 			let row = _siteSettings[i];
-			
-			// Only concern ourselves with entries containing the current domain
-			// or paths that apply to all domains
-			if (!row.domainPath.indexOf(urlDomain[0]) != -1 && !row.domainPath.startsWith('/')) {
-				continue;
-			}
-			
 			let domain = row.domainPath.split('/',1)[0];
 			let path = row.domainPath.substr(domain.length) || '/';
-			let re = new RegExp('(^|[./])' + Zotero.Utilities.quotemeta(domain) + '$', 'i');
-			if (re.test(urlHostPort) && urlPath.indexOf(path) === 0) {
+			if (urlHostPort.endsWith(domain) && urlPath.startsWith(path)) {
 				matches.push({
 					format: JSON.stringify(this.unserializeSetting(row.format)),
 					domainLength: domain.length,
@@ -437,17 +447,29 @@ Zotero.QuickCopy = new function() {
 	/**
 	 * If an export translator is the selected output format, load its code (which must be done
 	 * asynchronously) ahead of time, since drag-and-drop requires synchronous operation
+	 *
+	 * @return {Promise}
 	 */
 	var _loadOutputFormat = Zotero.Promise.coroutine(function* () {
 		var format = Zotero.Prefs.get("export.quickCopy.setting");
+		return _preloadFormat(format);
+	});
+	
+	
+	var _preloadFormat = async function (format) {
 		format = Zotero.QuickCopy.unserializeSetting(format);
 		if (format.mode == 'export') {
-			yield Zotero.Translators.init();
+			Zotero.debug(`Preloading ${format.id} for Quick Copy`);
+			await Zotero.Translators.init();
 			let translator = Zotero.Translators.get(format.id);
+			if (!translator) {
+				Zotero.logError(`Translator ${format.id} not found`);
+				return;
+			}
 			translator.cacheCode = true;
-			yield translator.getCode();
+			await translator.getCode();
 		}
-	});
+	};
 	
 	
 	var _loadFormattedNames = Zotero.Promise.coroutine(function* () {
@@ -460,7 +482,7 @@ Zotero.QuickCopy = new function() {
 		// add styles to list
 		_formattedNames = {};
 		var styles = Zotero.Styles.getVisible();
-		for each(var style in styles) {
+		for (let style of styles) {
 			_formattedNames['bibliography=' + style.styleID] = style.title;
 		}
 		

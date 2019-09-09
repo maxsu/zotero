@@ -5,7 +5,7 @@ describe("Zotero.Sync.Runner", function () {
 	
 	var apiKey = Zotero.Utilities.randomString(24);
 	var baseURL = "http://local.zotero/";
-	var userLibraryID, publicationsLibraryID, runner, caller, server, stub, spy;
+	var userLibraryID, runner, caller, server, stub, spy;
 	
 	var responses = {
 		keyInfo: {
@@ -120,7 +120,6 @@ describe("Zotero.Sync.Runner", function () {
 		});
 		
 		userLibraryID = Zotero.Libraries.userLibraryID;
-		publicationsLibraryID = Zotero.Libraries.publicationsLibraryID;
 		
 		Zotero.HTTP.mock = sinon.FakeXMLHttpRequest;
 		server = sinon.fakeServer.create();
@@ -200,10 +199,10 @@ describe("Zotero.Sync.Runner", function () {
 			var libraries = yield runner.checkLibraries(
 				runner.getAPIClient({ apiKey }), false, responses.keyInfo.fullAccess.json
 			);
-			assert.lengthOf(libraries, 4);
+			assert.lengthOf(libraries, 3);
 			assert.sameMembers(
 				libraries,
-				[userLibraryID, publicationsLibraryID, group1.libraryID, group2.libraryID]
+				[userLibraryID, group1.libraryID, group2.libraryID]
 			);
 		})
 		
@@ -234,10 +233,10 @@ describe("Zotero.Sync.Runner", function () {
 				runner.getAPIClient({ apiKey }),
 				false,
 				responses.keyInfo.fullAccess.json,
-				[userLibraryID, publicationsLibraryID]
+				[userLibraryID]
 			);
-			assert.lengthOf(libraries, 2);
-			assert.sameMembers(libraries, [userLibraryID, publicationsLibraryID]);
+			assert.lengthOf(libraries, 1);
+			assert.sameMembers(libraries, [userLibraryID]);
 			
 			var libraries = yield runner.checkLibraries(
 				runner.getAPIClient({ apiKey }),
@@ -296,6 +295,72 @@ describe("Zotero.Sync.Runner", function () {
 			assert.equal(skippedGroup.version, responses.groups.memberGroup.json.version - 1);
 		});
 		
+		it("should filter out remotely missing archived libraries if library list not provided", function* () {
+			var ownerGroupID = responses.groups.ownerGroup.json.id;
+			var archivedGroupID = 162512451; // nonexistent group id
+			
+			var ownerGroup = yield createGroup({
+				id: ownerGroupID,
+				version: responses.groups.ownerGroup.json.version
+			});
+			var archivedGroup = yield createGroup({
+				id: archivedGroupID,
+				editable: false,
+				archived: true
+			});
+			
+			setResponse('userGroups.groupVersions');
+			setResponse('groups.memberGroup');
+			var libraries = yield runner.checkLibraries(
+				runner.getAPIClient({ apiKey }),
+				false,
+				responses.keyInfo.fullAccess.json
+			);
+			
+			assert.lengthOf(libraries, 3);
+			assert.sameMembers(
+				libraries,
+				[
+					userLibraryID,
+					ownerGroup.libraryID,
+					// Nonexistent group should've been created
+					Zotero.Groups.getLibraryIDFromGroupID(responses.groups.memberGroup.json.id)
+				]
+			);
+		});
+		
+		it("should unarchive library if available remotely", function* () {
+			var syncedGroupID = responses.groups.ownerGroup.json.id;
+			var archivedGroupID = responses.groups.memberGroup.json.id;
+			
+			var syncedGroup = yield createGroup({
+				id: syncedGroupID,
+				version: responses.groups.ownerGroup.json.version
+			});
+			var archivedGroup = yield createGroup({
+				id: archivedGroupID,
+				version: responses.groups.memberGroup.json.version - 1,
+				editable: false,
+				archived: true
+			});
+			
+			setResponse('userGroups.groupVersions');
+			setResponse('groups.ownerGroup');
+			setResponse('groups.memberGroup');
+			var libraries = yield runner.checkLibraries(
+				runner.getAPIClient({ apiKey }),
+				false,
+				responses.keyInfo.fullAccess.json
+			);
+			
+			assert.lengthOf(libraries, 3);
+			assert.sameMembers(
+				libraries,
+				[userLibraryID, syncedGroup.libraryID, archivedGroup.libraryID]
+			);
+			assert.isFalse(archivedGroup.archived);
+		});
+		
 		it("shouldn't filter out skipped libraries if library list is provided", function* () {
 			var groupData = responses.groups.memberGroup;
 			var group = yield createGroup({
@@ -312,11 +377,11 @@ describe("Zotero.Sync.Runner", function () {
 				runner.getAPIClient({ apiKey }),
 				false,
 				responses.keyInfo.fullAccess.json,
-				[userLibraryID, publicationsLibraryID, group.libraryID]
+				[userLibraryID, group.libraryID]
 			);
 			
-			assert.lengthOf(libraries, 3);
-			assert.sameMembers(libraries, [userLibraryID, publicationsLibraryID, group.libraryID]);
+			assert.lengthOf(libraries, 2);
+			assert.sameMembers(libraries, [userLibraryID, group.libraryID]);
 		});
 		
 		it("should update outdated group metadata", function* () {
@@ -347,10 +412,10 @@ describe("Zotero.Sync.Runner", function () {
 			
 			assert.ok(stub.calledTwice);
 			stub.restore();
-			assert.lengthOf(libraries, 4);
+			assert.lengthOf(libraries, 3);
 			assert.sameMembers(
 				libraries,
-				[userLibraryID, publicationsLibraryID, group1.libraryID, group2.libraryID]
+				[userLibraryID, group1.libraryID, group2.libraryID]
 			);
 			
 			assert.equal(group1.name, groupData1.json.data.name);
@@ -416,7 +481,7 @@ describe("Zotero.Sync.Runner", function () {
 			var libraries = yield runner.checkLibraries(
 				runner.getAPIClient({ apiKey }), false, responses.keyInfo.fullAccess.json
 			);
-			assert.lengthOf(libraries, 4);
+			assert.lengthOf(libraries, 3);
 			var groupData1 = responses.groups.ownerGroup;
 			var group1 = Zotero.Groups.get(groupData1.json.id);
 			var groupData2 = responses.groups.memberGroup;
@@ -425,7 +490,7 @@ describe("Zotero.Sync.Runner", function () {
 			assert.ok(group2);
 			assert.sameMembers(
 				libraries,
-				[userLibraryID, publicationsLibraryID, group1.libraryID, group2.libraryID]
+				[userLibraryID, group1.libraryID, group2.libraryID]
 			);
 			assert.equal(group1.name, groupData1.json.data.name);
 			assert.isTrue(group1.editable);
@@ -447,27 +512,51 @@ describe("Zotero.Sync.Runner", function () {
 			var libraries = yield runner.checkLibraries(
 				runner.getAPIClient({ apiKey }), false, responses.keyInfo.fullAccess.json
 			);
-			assert.lengthOf(libraries, 3);
-			assert.sameMembers(libraries, [userLibraryID, publicationsLibraryID, group2.libraryID]);
+			assert.lengthOf(libraries, 2);
+			assert.sameMembers(libraries, [userLibraryID, group2.libraryID]);
 			assert.isFalse(Zotero.Groups.exists(groupData1.json.id));
 			assert.isTrue(Zotero.Groups.exists(groupData2.json.id));
 		})
 		
-		it.skip("should keep remotely missing groups", function* () {
-			var groupData = responses.groups.ownerGroup;
-			var group = yield createGroup({ id: groupData.json.id, version: groupData.json.version });
+		it("should keep remotely missing groups", function* () {
+			var group1 = yield createGroup({ editable: true, filesEditable: true });
+			var group2 = yield createGroup({ editable: true, filesEditable: true });
 			
 			setResponse('userGroups.groupVersionsEmpty');
+			var called = 0;
+			var otherGroup;
 			waitForDialog(function (dialog) {
+				called++;
 				var text = dialog.document.documentElement.textContent;
-				assert.include(text, group.name);
+				if (text.includes(group1.name)) {
+					otherGroup = group2;
+				}
+				else if (text.includes(group2.name)) {
+					otherGroup = group1;
+				}
+				else {
+					throw new Error("Dialog text does not include either group name");
+				}
+				
+				waitForDialog(function (dialog) {
+					called++;
+					var text = dialog.document.documentElement.textContent;
+					assert.include(text, otherGroup.name);
+				}, "extra1");
 			}, "extra1");
 			var libraries = yield runner.checkLibraries(
 				runner.getAPIClient({ apiKey }), false, responses.keyInfo.fullAccess.json
 			);
-			assert.lengthOf(libraries, 3);
-			assert.sameMembers(libraries, [userLibraryID, publicationsLibraryID, group.libraryID]);
-			assert.isTrue(Zotero.Groups.exists(groupData.json.id));
+			assert.equal(called, 2);
+			assert.lengthOf(libraries, 1);
+			assert.sameMembers(libraries, [userLibraryID]);
+			// Groups should still exist but be read-only and archived
+			[group1, group2].forEach((group) => {
+				assert.isTrue(Zotero.Groups.exists(group.id));
+				assert.isTrue(group.archived);
+				assert.isFalse(group.editable);
+				assert.isFalse(group.filesEditable);
+			});
 		})
 		
 		it("should cancel sync with remotely missing groups", function* () {
@@ -551,7 +640,7 @@ describe("Zotero.Sync.Runner", function () {
 			assert.isTrue(stub.calledOnce);
 			assert.isFalse(group.editable);
 			
-			stub.reset();
+			stub.restore();
 		});
 	})
 
@@ -613,43 +702,6 @@ describe("Zotero.Sync.Runner", function () {
 				status: 200,
 				headers: {
 					"Last-Modified-Version": 5
-				},
-				json: []
-			});
-			// My Publications
-			setResponse({
-				method: "GET",
-				url: "users/1/publications/settings",
-				status: 200,
-				headers: {
-					"Last-Modified-Version": 10
-				},
-				json: []
-			});
-			setResponse({
-				method: "GET",
-				url: "users/1/publications/items/top?format=versions&includeTrashed=1",
-				status: 200,
-				headers: {
-					"Last-Modified-Version": 10
-				},
-				json: []
-			});
-			setResponse({
-				method: "GET",
-				url: "users/1/publications/items?format=versions&includeTrashed=1",
-				status: 200,
-				headers: {
-					"Last-Modified-Version": 10
-				},
-				json: []
-			});
-			setResponse({
-				method: "GET",
-				url: "users/1/publications/deleted?since=0",
-				status: 200,
-				headers: {
-					"Last-Modified-Version": 10
 				},
 				json: []
 			});
@@ -775,15 +827,6 @@ describe("Zotero.Sync.Runner", function () {
 			});
 			setResponse({
 				method: "GET",
-				url: "users/1/publications/fulltext?format=versions",
-				status: 200,
-				headers: {
-					"Last-Modified-Version": 10
-				},
-				json: {}
-			});
-			setResponse({
-				method: "GET",
 				url: "groups/1623562/fulltext?format=versions",
 				status: 200,
 				headers: {
@@ -801,6 +844,8 @@ describe("Zotero.Sync.Runner", function () {
 				json: {}
 			});
 			
+			var startTime = new Date().getTime();
+			
 			yield runner.sync({
 				onError: e => { throw e },
 			});
@@ -811,10 +856,6 @@ describe("Zotero.Sync.Runner", function () {
 				5
 			);
 			assert.equal(
-				Zotero.Libraries.getVersion(publicationsLibraryID),
-				10
-			);
-			assert.equal(
 				Zotero.Libraries.getVersion(Zotero.Groups.getLibraryIDFromGroupID(1623562)),
 				15
 			);
@@ -823,9 +864,9 @@ describe("Zotero.Sync.Runner", function () {
 				20
 			);
 			
-			// Last sync time should be within the last second
+			// Last sync time should be within the last few seconds
 			var lastSyncTime = Zotero.Sync.Data.Local.getLastSyncTime();
-			assert.isAbove(lastSyncTime.getTime(), new Date().getTime() - 2000);
+			assert.isAbove(lastSyncTime.getTime(), startTime);
 			assert.isBelow(lastSyncTime.getTime(), new Date().getTime());
 		})
 		
@@ -870,7 +911,7 @@ describe("Zotero.Sync.Runner", function () {
 				onError: e => { throw e },
 			});
 			
-			assert.equal(stub.callCount, 4);
+			assert.equal(stub.callCount, 3);
 			stub.restore();
 		});
 	})
@@ -953,9 +994,9 @@ describe("Zotero.Sync.Runner", function () {
 		});
 		
 		it("should show the sync error icon on error", function* () {
-			let pubLib = Zotero.Libraries.get(publicationsLibraryID);
-			pubLib.libraryVersion = 5;
-			yield pubLib.save();
+			let library = Zotero.Libraries.userLibrary;
+			library.libraryVersion = 5;
+			yield library.save();
 			
 			setResponse('keyInfo.fullAccess');
 			setResponse('userGroups.groupVersionsEmpty');
@@ -970,25 +1011,6 @@ describe("Zotero.Sync.Runner", function () {
 				json: {
 					INVALID: true // TODO: Find a cleaner error
 				}
-			});
-			// No publications changes
-			setResponse({
-				method: "GET",
-				url: "users/1/publications/settings?since=5",
-				status: 304,
-				headers: {
-					"Last-Modified-Version": 5
-				},
-				json: {}
-			});
-			setResponse({
-				method: "GET",
-				url: "users/1/publications/fulltext?format=versions",
-				status: 200,
-				headers: {
-					"Last-Modified-Version": 5
-				},
-				json: {}
 			});
 			
 			spy = sinon.spy(runner, "updateIcons");
@@ -1006,6 +1028,13 @@ describe("Zotero.Sync.Runner", function () {
 			win = yield loadZoteroPane();
 			var libraryID = Zotero.Libraries.userLibraryID;
 			
+			setResponse({
+				method: "GET",
+				url: "keys/current",
+				status: 403,
+				headers: {},
+				text: "Invalid Key"
+			});
 			yield runner.sync({
 				background: true
 			});
@@ -1018,6 +1047,53 @@ describe("Zotero.Sync.Runner", function () {
 			var buttons = panel.getElementsByTagName('button');
 			assert.lengthOf(buttons, 1);
 			assert.equal(buttons[0].label, Zotero.getString('sync.openSyncPreferences'));
+		});
+		
+		
+		it("should show a button in error panel to select a too-long note", function* () {
+			win = yield loadZoteroPane();
+			var doc = win.document;
+			
+			var text = "".padStart(256, "a");
+			var item = yield createDataObject('item', { itemType: 'note', note: text });
+			
+			setResponse('keyInfo.fullAccess');
+			setResponse('userGroups.groupVersions');
+			setResponse('groups.ownerGroup');
+			setResponse('groups.memberGroup');
+			
+			server.respond(function (req) {
+				if (req.method == "POST" && req.url == baseURL + "users/1/items") {
+					req.respond(
+						200,
+						{
+							"Last-Modified-Version": 5
+						},
+						JSON.stringify({
+							successful: {},
+							success: {},
+							unchanged: {},
+							failed: {
+								"0": {
+									code: 413,
+									message: `Note ${Zotero.Utilities.ellipsize(text, 100)} too long`
+								}
+							}
+						})
+					);
+				}
+			});
+			
+			yield runner.sync({ libraries: [Zotero.Libraries.userLibraryID] });
+			
+			var errorIcon = doc.getElementById('zotero-tb-sync-error');
+			assert.isFalse(errorIcon.hidden);
+			errorIcon.click();
+			var panel = win.document.getElementById('zotero-sync-error-panel');
+			assert.include(panel.innerHTML, text.substr(0, 10));
+			var buttons = panel.getElementsByTagName('button');
+			assert.lengthOf(buttons, 1);
+			assert.include(buttons[0].label, Zotero.getString('pane.items.showItemInLibrary'));
 		});
 		
 		

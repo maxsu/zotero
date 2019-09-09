@@ -33,6 +33,11 @@
 	<script src="itemPane.js" type="application/javascript;version=1.8"/>
 	
 	<vbox id="zotero-item-pane" zotero-persist="width height">
+		<!-- My Publications -->
+		<hbox id="zotero-item-pane-top-buttons-my-publications" class="zotero-item-pane-top-buttons" hidden="true">
+			<button id="zotero-item-collection-show-hide"/>
+		</hbox>
+		
 		<!-- Trash -->
 		<hbox id="zotero-item-pane-top-buttons-trash" class="zotero-item-pane-top-buttons" hidden="true">
 			<button id="zotero-item-restore-button" label="&zotero.items.menu.restoreToLibrary;"
@@ -102,8 +107,16 @@
 			
 			<!-- Note item -->
 			<groupbox id="zotero-view-note" flex="1">
-				<zoteronoteeditor id="zotero-note-editor" flex="1" notitle="1" previousfocus="zotero-items-tree"/>
-				<button id="zotero-view-note-button" label="&zotero.notes.separate;" oncommand="ZoteroPane_Local.openNoteWindow(this.getAttribute('noteID')); if(this.hasAttribute('sourceID')) ZoteroPane_Local.selectItem(this.getAttribute('sourceID'));"/>
+				<!--
+					'onerror' handler crashes the app on a save error to prevent typing in notes
+					while they're not being saved
+				-->
+				<zoteronoteeditor id="zotero-note-editor" flex="1" notitle="1"
+					previousfocus="zotero-items-tree"
+					onerror="ZoteroPane.displayErrorMessage(); this.mode = 'view'"/>
+				<button id="zotero-view-note-button"
+						label="&zotero.notes.separate;"
+						oncommand="ZoteroItemPane.openNoteWindow()"/>
 			</groupbox>
 			
 			<!-- Attachment item -->

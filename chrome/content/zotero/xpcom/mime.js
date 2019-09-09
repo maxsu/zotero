@@ -26,7 +26,6 @@
 Zotero.MIME = new function(){
 	this.isTextType = isTextType;
 	this.getPrimaryExtension = getPrimaryExtension;
-	this.sniffForMIMEType = sniffForMIMEType;
 	this.sniffForBinary = sniffForBinary;
 	this.hasNativeHandler = hasNativeHandler;
 	this.hasInternalHandler = hasInternalHandler;
@@ -47,8 +46,10 @@ Zotero.MIME = new function(){
 		["GIF8", 'image/gif', 0],
 		["\uFFFDPNG", 'image/png', 0],
 		["JFIF", 'image/jpeg'],
-		["FLV", "video/x-flv", 0]
-		
+		["FLV", "video/x-flv", 0],
+		["\u0000\u0000\u0001\u0000", "image/vnd.microsoft.icon", 0],
+		["\u0053\u0051\u004C\u0069\u0074\u0065\u0020\u0066"
+			+ "\u006F\u0072\u006D\u0061\u0074\u0020\u0033\u0000", "application/x-sqlite3", 0]
 	];
 	
 	var _extensions = {
@@ -102,10 +103,6 @@ Zotero.MIME = new function(){
 	var _nativeMIMETypes = {
 		'text/html': true,
 		'text/css': true,
-		'image/jpeg': true,
-		'image/gif': true,
-		'image/png': true,
-		'image/svg+xml': true,
 		'text/xml': true,
 		'application/xhtml+xml': true,
 		'application/xml': true,
@@ -177,9 +174,7 @@ Zotero.MIME = new function(){
 			
 			case 'image/tif':
 			case 'image/tiff':
-			case 'image/tif':
 			case 'image/x-tif':
-			case 'image/tiff':
 			case 'image/x-tiff':
 			case 'application/tif':
 			case 'application/x-tif':
@@ -231,12 +226,12 @@ Zotero.MIME = new function(){
 	/*
 	 * Searches string for magic numbers
 	 */
-	function sniffForMIMEType(str){
-		for (var i in _snifferEntries){
-			var match = false;
+	this.sniffForMIMEType = function (str) {
+		for (let i in _snifferEntries) {
+			let match = false;
 			// If an offset is defined, match only from there
-			if (typeof _snifferEntries[i][2] != 'undefined') {
-				if (str.substr(i[2]).indexOf(_snifferEntries[i][0]) == 0) {
+			if (_snifferEntries[i][2] != undefined) {
+				if (str.substr(_snifferEntries[i][2]).indexOf(_snifferEntries[i][0]) == 0) {
 					match = true;
 				}
 			}
@@ -277,7 +272,7 @@ Zotero.MIME = new function(){
 	 * ext is an optional file extension hint if data sniffing is unsuccessful
 	 */
 	this.getMIMETypeFromData = function (str, ext){
-		var mimeType = sniffForMIMEType(str);
+		var mimeType = this.sniffForMIMEType(str);
 		if (mimeType){
 			Zotero.debug('Detected MIME type ' + mimeType);
 			return mimeType;

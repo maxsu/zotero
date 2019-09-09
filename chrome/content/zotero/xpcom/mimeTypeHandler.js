@@ -54,49 +54,22 @@ Zotero.MIMETypeHandler = new function () {
 		_ignoreContentDispositionTypes = [];
 		_observers = [];
 		
-		if(Zotero.Prefs.get("parseEndNoteMIMETypes")) {
-			this.registerMetadataHandlers();
-		}
-		Zotero.Prefs.registerObserver("parseEndNoteMIMETypes", function(val) {
-			if (val) this.registerMetadataHandlers();
-			else this.unregisterMetadataHandlers();
-		}.bind(this));
-		
-		this.addHandler("application/vnd.citationstyles.style+xml", function(a1, a2) { Zotero.Styles.install(a1, a2) });
-		this.addHandler("text/x-csl", function(a1, a2) { Zotero.Styles.install(a1, a2) }); // deprecated
-		this.addHandler("application/x-zotero-schema", Zotero.Schema.importSchema);
-		this.addHandler("application/x-zotero-settings", Zotero.Prefs.importSettings);
-	}
-	
-	// MIME types that Zotero should handle when parseEndNoteMIMETypes preference
-	// is enabled
-	var metadataMIMETypes = [
-		"application/x-endnote-refer", "application/x-research-info-systems",
-		"application/x-inst-for-scientific-info",
-		"text/x-bibtex", "application/x-bibtex",
-		// Non-standard
-		"text/x-research-info-systems",
-		"text/application/x-research-info-systems", // Nature serves this
-		"text/ris", // Cell serves this
-		"ris" // Not even trying
-	];
-	
-	/**
-	 * Registers MIME types for parseEndNoteMIMETypes preference
-	 */
-	this.registerMetadataHandlers = function() {
-		for (var i=0; i<metadataMIMETypes.length; i++) {
-			this.addHandler(metadataMIMETypes[i], _importHandler, true);
-		}
-	}
-	
-	/**
-	 * Unregisters MIME types for parseEndNoteMIMETypes preference
-	 */
-	this.unregisterMetadataHandlers = function() {
-		for (var i=0; i<metadataMIMETypes.length; i++) {
-			this.removeHandler(metadataMIMETypes[i]);
-		}
+		// Install styles from the Cite preferences
+		this.addHandler("application/vnd.citationstyles.style+xml", Zotero.Promise.coroutine(function* (a1, a2) {
+			let win = Services.wm.getMostRecentWindow("zotero:basicViewer");
+			try {
+				yield Zotero.Styles.install(a1, a2, true);
+			}
+			catch (e) {
+				Zotero.logError(e);
+				(new Zotero.Exception.Alert("styles.install.unexpectedError",
+					a2, "styles.install.title", e)).present();
+			}
+			// Close styles page in basic viewer after installing a style
+			if (win) {
+				win.close();
+			}
+		}));
 	}
 	
 	/**
@@ -133,67 +106,6 @@ Zotero.MIMETypeHandler = new function () {
 	
 	
 	/**
-	 * Handles Refer/RIS/ISI MIME types
-	 * @param {String} string The Refer/RIS/ISI formatted records
-	 * @param {String} uri The URI from which the Refer/RIS/ISI formatted records were downloaded
-	 */
-	function _importHandler(string, uri, contentType, channel) {
-		var win = channel.notificationCallbacks.getInterface(Components.interfaces.nsIDOMWindow).top;
-		if(!win) {
-			Zotero.debug("Attempt to import from a channel without an attached document refused");
-			return false;
-		}
-		
-		var hostPort = channel.URI.hostPort.replace(";", "_", "g");
-		
-		var allowedSitesString = Zotero.Prefs.get("ingester.allowedSites");
-		allowedSites = allowedSitesString.split(";");
-		
-		if(allowedSites.indexOf(hostPort) === -1) {
-			var title = Zotero.getString("ingester.importReferRISDialog.title");
-			var text = Zotero.getString("ingester.importReferRISDialog.text", channel.URI.hostPort)+"\n\n";
-			var checkMsg = Zotero.getString("ingester.importReferRISDialog.checkMsg");
-			var checkValue = {"value":false};
-			
-			// make tab-modal dialog (https://developer.mozilla.org/en/Using_tab-modal_prompts)
-			var prompt = Components.classes["@mozilla.org/prompter;1"]
-				 .getService(Components.interfaces.nsIPromptFactory)
-				 .getPrompt(win, Components.interfaces.nsIPrompt);
-			
-			var bag = prompt.QueryInterface(Components.interfaces.nsIWritablePropertyBag2);
-			bag.setPropertyAsBool("allowTabModal", true);
-		
-			var continueDownload = prompt.confirmCheck(title, text, checkMsg, checkValue);
-			if(!continueDownload) return false;
-			if(checkValue.value) {
-				// add to allowed sites if desired
-				Zotero.Prefs.set("ingester.allowedSites", allowedSitesString+";"+hostPort);
-			}
-		}
-		
-		var frontWindow = Components.classes["@mozilla.org/embedcomp/window-watcher;1"].
-			getService(Components.interfaces.nsIWindowWatcher).activeWindow;
-		
-		// attempt to import through Zotero.Translate
-		var translation = new Zotero.Translate("import");
-		translation.setLocation(uri);
-		translation.setString(string);
-		
-		// attempt to retrieve translators
-		return translation.getTranslators().then(function(translators) {
-			if(!translators.length) {
-				// we lied. we can't really translate this file.
-				Zotero.debug("No translator found to handle this file");
-				return false;
-			}
-			
-			// translate using first available
-			translation.setTranslator(translators[0]);
-			return frontWindow.Zotero_Browser.performTranslation(translation);
-		});
-	}
-	
-	/**
 	 * Called to observe a page load
 	 */
 	var _Observer = new function() {
@@ -227,7 +139,7 @@ Zotero.MIMETypeHandler = new function () {
 	
 	var _URIContentListener = new function() {
 		/**
-		 * Standard QI definiton
+		 * Standard QI definition
 		 */
 		this.QueryInterface = function(iid) {
 			if  (iid.equals(Components.interfaces.nsISupports)
@@ -278,7 +190,7 @@ Zotero.MIMETypeHandler = new function () {
 	}
 	
 	/**
-	 * Standard QI definiton
+	 * Standard QI definition
 	 */
 	_StreamListener.prototype.QueryInterface = function(iid) {
 		if (iid.equals(Components.interfaces.nsISupports)

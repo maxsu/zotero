@@ -1,4 +1,4 @@
--- 87
+-- 105
 
 -- Copyright (c) 2009 Center for History and New Media
 --                    George Mason University, Fairfax, Virginia, USA
@@ -203,7 +203,8 @@ CREATE TABLE feeds (
     lastUpdate TIMESTAMP,
     lastCheck TIMESTAMP,
     lastCheckError TEXT,
-    cleanupAfter INT,
+    cleanupReadAfter INT,
+    cleanupUnreadAfter INT,
     refreshInterval INT,
     FOREIGN KEY (libraryID) REFERENCES libraries(libraryID) ON DELETE CASCADE
 );
@@ -254,7 +255,8 @@ CREATE TABLE libraries (
     filesEditable INT NOT NULL,
     version INT NOT NULL DEFAULT 0,
     storageVersion INT NOT NULL DEFAULT 0,
-    lastSync INT NOT NULL DEFAULT 0
+    lastSync INT NOT NULL DEFAULT 0,
+    archived INT NOT NULL DEFAULT 0
 );
 
 CREATE TABLE users (
@@ -278,6 +280,17 @@ CREATE TABLE groupItems (
     FOREIGN KEY (itemID) REFERENCES items(itemID) ON DELETE CASCADE,
     FOREIGN KEY (createdByUserID) REFERENCES users(userID) ON DELETE SET NULL,
     FOREIGN KEY (lastModifiedByUserID) REFERENCES users(userID) ON DELETE SET NULL
+);
+
+CREATE TABLE publicationsItems (
+    itemID INTEGER PRIMARY KEY
+);
+
+CREATE TABLE retractedItems (
+	itemID INTEGER PRIMARY KEY,
+	data TEXT,
+	flag INT DEFAULT 0,
+	FOREIGN KEY (itemID) REFERENCES items(itemID) ON DELETE CASCADE
 );
 
 CREATE TABLE fulltextItems (

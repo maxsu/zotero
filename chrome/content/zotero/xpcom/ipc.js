@@ -33,7 +33,7 @@ Zotero.IPC = new function() {
 		if(!Zotero.isWin) {	// no pipe support on Fx 3.6
 			_instancePipe = _getPipeDirectory();
 			if(!_instancePipe.exists()) {
-				_instancePipe.create(Ci.nsIFile.DIRECTORY_TYPE, 0700);
+				_instancePipe.create(Ci.nsIFile.DIRECTORY_TYPE, 0o700);
 			}
 			_instancePipe.append(Zotero.instanceID);
 			
@@ -66,7 +66,7 @@ Zotero.IPC = new function() {
 				// Standalone sends this to the Firefox extension to tell the Firefox extension to
 				// release its lock on the Zotero database
 				if(!Zotero.isConnector && (msg.length === 11 ||
-					                       msg.substr(12) === Zotero.getZoteroDatabase().persistentDescriptor)) {
+						msg.substr(12) === Zotero.DataDirectory.getDatabase())) {
 					switchConnectorMode(true);
 				}
 			} else if(msg === "lockReleased") {
@@ -92,6 +92,11 @@ Zotero.IPC = new function() {
 				// know that Standalone has fully initialized and it should pull the list of
 				// translators
 				Zotero.initComplete();
+			}
+			else if (msg == "reinit") {
+				if (Zotero.isConnector) {
+					reinit(false, true);
+				}
 			}
 		}
 	}
@@ -121,7 +126,7 @@ Zotero.IPC = new function() {
 		// On Linux, O_NONBLOCK = 00004000
 		// On both, O_WRONLY = 0x0001
 		var mode = 0x0001;
-		if(!block) mode = mode | (Zotero.isLinux ? 00004000 : 0x0004);
+		if(!block) mode = mode | (Zotero.isLinux ? 0o0004000 : 0x0004);
 		
 		var fd = open(pipe.path, mode);
 		if(fd === -1) return false;			
@@ -279,10 +284,15 @@ Zotero.IPC = new function() {
 	 * Get directory containing Zotero pipes
 	 */
 	function _getPipeDirectory() {
-		var dir = Zotero.getZoteroDirectory();
+		var dir = Zotero.File.pathToFile(Zotero.DataDirectory.dir);
 		dir.append("pipes");
 		return dir;
 	}
+	
+	this.pipeExists = Zotero.Promise.coroutine(function* () {
+		var dir = _getPipeDirectory().path;
+		return (yield OS.File.exists(dir)) && !(yield Zotero.File.directoryIsEmpty(dir));
+	});
 	
 	/**
 	 * Gets the path to libc as a string
@@ -344,7 +354,7 @@ Zotero.IPC.Pipe = new function() {
 	 * Creates and listens on a pipe
 	 *
 	 * @param {nsIFile} file The location where the pipe should be created
-	 * @param {Function} callback A function to be passed any data recevied on the pipe
+	 * @param {Function} callback A function to be passed any data received on the pipe
 	 */
 	this.initPipeListener = function(file, callback) {
 		Zotero.debug("IPC: Initializing pipe at "+file.path);
@@ -377,7 +387,7 @@ Zotero.IPC.Pipe = new function() {
 		}
 		
 		// make pipe
-		var ret = _mkfifo(file.path, 0600);
+		var ret = _mkfifo(file.path, 0o600);
 		return file.exists();
 	}
 	

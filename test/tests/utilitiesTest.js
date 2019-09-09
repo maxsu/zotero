@@ -16,8 +16,54 @@ describe("Zotero.Utilities", function() {
 				}
 			}
 		});
+		
+		it('should not parse words starting with symbols as last name', function() {
+			let author = Zotero.Utilities.cleanAuthor('First Middle Last [CountryName]', false);
+			assert.equal(author.firstName, 'First Middle');
+			// Brackets at the beginning and end of a string get removed for strings
+			// such as [First Last] -> Last, First.
+			// The current output is not ideal, but better than "[CountryName, First Middle Last"
+			assert.equal(author.lastName, 'Last [CountryName');
+		});
+		
+		it('should parse names starting with unicode characters correctly', function() {
+			let author = Zotero.Utilities.cleanAuthor('Ąžuolas Žolynas', false);
+			assert.equal(author.firstName, 'Ąžuolas');
+			assert.equal(author.lastName, 'Žolynas');
+		})
 	});
-	describe("cleanISBN", function() {
+	
+	
+	describe("#cleanDOI()", function () {
+		var cleanDOI = Zotero.Utilities.cleanDOI;
+		var doi = '10.1088/1748-9326/11/4/048002';
+		var shortDOI = '10/aabbe';
+		
+		it("should parse a DOI", function () {
+			assert.equal(cleanDOI(`${doi}`), doi);
+		});
+		
+		it("should parse a short DOI", function () {
+			assert.equal(cleanDOI(`${shortDOI}`), shortDOI);
+		});
+		
+		it("should parse a DOI at the end of a sentence", function () {
+			assert.equal(cleanDOI(`Foo bar ${doi}. Foo bar`), doi);
+		});
+		
+		// FIXME
+		it.skip("should parse a DOI in parentheses", function () {
+			assert.equal(cleanDOI(`Foo bar (${doi}) foo bar`), doi);
+		});
+		
+		// FIXME
+		it.skip("should parse a DOI in brackets", function () {
+			assert.equal(cleanDOI(`Foo bar [${doi}] foo bar`), doi);
+		});
+	});
+	
+	
+	describe("#cleanISBN()", function() {
 		let cleanISBN = Zotero.Utilities.cleanISBN;
 		it("should return false for non-ISBN string", function() {
 			assert.isFalse(cleanISBN(''), 'returned false for empty string');
@@ -37,7 +83,7 @@ describe("Zotero.Utilities", function() {
 		});
 		it("should strip off internal characters in ISBN string", function() {
 			let ignoredChars = '\x2D\xAD\u2010\u2011\u2012\u2013\u2014\u2015\u2043\u2212' // Dashes
-				+ ' \xA0\r\n\t\x0B\x0C\u1680\u180E\u2000\u2001\u2002\u2003\u2004\u2005' // Spaces
+				+ ' \xA0\r\n\t\x0B\x0C\u1680\u2000\u2001\u2002\u2003\u2004\u2005' // Spaces
 				+ '\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF';
 			for (let i=0; i<ignoredChars.length; i++) {
 				let charCode = '\\u' + Zotero.Utilities.lpad(ignoredChars.charCodeAt(i).toString(16).toUpperCase(), '0', 4);
@@ -134,7 +180,7 @@ describe("Zotero.Utilities", function() {
 		});
 		it("should strip off internal characters in ISSN string", function() {
 			let ignoredChars = '\x2D\xAD\u2010\u2011\u2012\u2013\u2014\u2015\u2043\u2212' // Dashes
-				+ ' \xA0\r\n\t\x0B\x0C\u1680\u180E\u2000\u2001\u2002\u2003\u2004\u2005' // Spaces
+				+ ' \xA0\r\n\t\x0B\x0C\u1680\u2000\u2001\u2002\u2003\u2004\u2005' // Spaces
 				+ '\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF';
 			for (let i=0; i<ignoredChars.length; i++) {
 				let charCode = '\\u' + Zotero.Utilities.lpad(ignoredChars.charCodeAt(i).toString(16).toUpperCase(), '0', 4);
@@ -320,6 +366,31 @@ describe("Zotero.Utilities", function() {
 			assert.deepEqual(cslCreators[4], creators[4].expect, 'institutional author is not parsed');
 			assert.deepEqual(cslCreators[5], creators[5].expect, 'protected last name prevents parsing');
 		});
+		
+		it("should convert UTC access date to local time", async function () {
+			var offset = new Date().getTimezoneOffset();
+			var item = new Zotero.Item('webpage');
+			var localDate;
+			if (offset < 0) {
+				localDate = '2019-01-09 00:00:00';
+			}
+			else if (offset > 0) {
+				localDate = '2019-01-09 23:59:59';
+			}
+			// Can't test timezone offset if in UTC
+			else {
+				this.skip();
+				return;
+			}
+			var utcDate = Zotero.Date.sqlToDate(localDate);
+			item.setField('accessDate', Zotero.Date.dateToSQL(utcDate, true));
+			await item.saveTx();
+			let accessed = Zotero.Utilities.itemToCSLJSON(item).accessed;
+			
+			assert.equal(accessed['date-parts'][0][0], 2019);
+			assert.equal(accessed['date-parts'][0][1], 1);
+			assert.equal(accessed['date-parts'][0][2], 9);
+		});
 	});
 	describe("itemFromCSLJSON", function () {
 		it("should stably perform itemToCSLJSON -> itemFromCSLJSON -> itemToCSLJSON", function* () {
@@ -328,6 +399,11 @@ describe("Zotero.Utilities", function() {
 			
 			for (let i in data) {
 				let json = data[i];
+				
+				// TEMP: https://github.com/zotero/zotero/issues/1667
+				if (i == 'podcast') {
+					delete json['collection-title'];
+				}
 				
 				let item = new Zotero.Item();
 				Zotero.Utilities.itemFromCSLJSON(item, json);
@@ -341,6 +417,23 @@ describe("Zotero.Utilities", function() {
 				assert.deepEqual(newJSON, json, i + ' export -> import -> export is stable');
 			}
 			
+		});
+		it("should recognize the legacy shortTitle key", function* () {
+			this.timeout(20000);
+
+			let data = loadSampleData('citeProcJSExport');
+
+			var json = data.artwork;
+			var canonicalKeys = Object.keys(json);
+			json.shortTitle = json["title-short"];
+			delete json["title-short"];
+
+			let item = new Zotero.Item();
+			Zotero.Utilities.itemFromCSLJSON(item, json);
+			yield item.saveTx();
+
+			let newJSON = Zotero.Utilities.itemToCSLJSON(item);
+			assert.hasAllKeys(newJSON, canonicalKeys);
 		});
 		it("should import exported standalone note", function* () {
 			let note = new Zotero.Item('note');
@@ -368,6 +461,51 @@ describe("Zotero.Utilities", function() {
 			Zotero.Utilities.itemFromCSLJSON(item, jsonAttachment);
 			
 			assert.equal(item.getField('title'), jsonAttachment.title, 'title imported correctly');
+		});
+		// For Zotero.Item created in translation sandbox in connectors
+		it("should not depend on Zotero.Item existing", function* () {
+			let item = new Zotero.Item;
+			var Item = Zotero.Item;
+			delete Zotero.Item;
+			assert.throws(() => "" instanceof Zotero.Item);
+
+			let data = loadSampleData('citeProcJSExport');
+			assert.doesNotThrow(Zotero.Utilities.itemFromCSLJSON.bind(Zotero.Utilities, item, Object.values(data)[0]));
+			
+			Zotero.Item = Item;
+			assert.doesNotThrow(() => "" instanceof Zotero.Item);
+		})
+	});
+	
+	describe("#ellipsize()", function () {
+		describe("with wordBoundary", function () {
+			it("should truncate at word boundary", function* () {
+				assert.equal(Zotero.Utilities.ellipsize("abc def ghi", 3, true), "abc…");
+			});
+			
+			it("should trim whitespace after word boundary", function* () {
+				assert.equal(Zotero.Utilities.ellipsize("abc def ghi", 4, true), "abc…");
+			});
+			
+			it("should trim characters after word boundary", function () {
+				assert.equal(Zotero.Utilities.ellipsize("abc def ghi", 5, true), "abc…");
+			});
+			
+			it("should truncate in the middle of a word", function () {
+				assert.equal(Zotero.Utilities.ellipsize("abcdefghi", 6, true), "abcdef…");
+			});
+			
+			it("should truncate at word boundary with previous space within radius", function () {
+				assert.equal(Zotero.Utilities.ellipsize("abc def ghi", 7, true), "abc def…");
+			});
+			
+			it("should return string as is if shorter than length", function () {
+				assert.equal(Zotero.Utilities.ellipsize("abcdefg", 8, true), "abcdefg");
+			});
+			
+			it("should return string as is if equal to length", function () {
+				assert.equal(Zotero.Utilities.ellipsize("abcdefgh", 8, true), "abcdefgh");
+			});
 		});
 	});
 });

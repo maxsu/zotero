@@ -16,13 +16,16 @@ groupbox
 }
 
 #tags-box {
+	overflow-x: hidden;
+	overflow-y: auto;
+	background-color: -moz-field;
+}
+
+#tags-box > div {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: flex-start;
 	align-content: flex-start;
-	overflow-x: hidden;
-	overflow-y: auto;
-	background-color: -moz-field;
 }
 
 #tags-box button {
@@ -32,6 +35,7 @@ groupbox
 	overflow: hidden;
 	text-overflow: ellipsis;
 	background-color: transparent;
+	font-size: 1em; /* Scale with font size pref */
 	text-align: left;
 	white-space: nowrap;
 	border: 1px solid transparent; /* always include border so height is same as zotero-clicky */
@@ -81,7 +85,17 @@ toolbarbutton.zotero-clicky
 	height:1em;
 }
 
-#view-settings-menu .toolbarbutton-menu-dropmarker
-{
-	margin-left: -12px !important;
+#view-settings-menu {
+	list-style-image: url(chrome://zotero/skin/tag-selector-menu.png);
+}
+
+#view-settings-menu .toolbarbutton-icon {
+	width: 16px;
+	margin-right: 12px; /* leave room for dropmarker */
+}
+
+
+/* BEGIN 2X BLOCK -- DO NOT EDIT MANUALLY -- USE 2XIZE */
+@media (min-resolution: 1.25dppx) {
+	#view-settings-menu  { list-style-image: url(chrome://zotero/skin/tag-selector-menu@2x.png); }
 }

@@ -25,9 +25,6 @@
 
 "use strict";
 
-// Enumeration of types of translators
-var TRANSLATOR_TYPES = {"import":1, "export":2, "web":4, "search":8};
-
 /**
  * Singleton to handle loading and caching of translators
  * @namespace
@@ -35,21 +32,43 @@ var TRANSLATOR_TYPES = {"import":1, "export":2, "web":4, "search":8};
 Zotero.Translators = new function() {
 	var _cache, _translators;
 	var _initialized = false;
+	var _initializationDeferred = false;
 	
 	/**
 	 * Initializes translator cache, loading all translator metadata into memory
 	 *
 	 * @param {Object} [options.metadataCache] - Translator metadata keyed by filename, if already
-	 *     available (e.g., in updateBundledFiles()), to avoid unnecesary file reads
+	 *     available (e.g., in updateBundledFiles()), to avoid unnecessary file reads
 	 */
-	this.reinit = Zotero.Promise.coroutine(function* (options = {}) {
+	this.init = Zotero.Promise.coroutine(function* (options = {}) {
+		// Wait until bundled files have been updated, except when this is called by the schema update
+		// code itself
+		if (!options.fromSchemaUpdate) {
+			yield Zotero.Schema.schemaUpdatePromise;
+		}
+		
+		// If an initialization has already started, a regular init() call should return the promise
+		// for that (which may already be resolved). A reinit should yield on that but then continue
+		// with reinitialization.
+		if (_initializationDeferred) {
+			let promise = _initializationDeferred.promise;
+			if (options.reinit) {
+				yield promise;
+			}
+			else {
+				return promise;
+			}
+		}
+		
+		_initializationDeferred = Zotero.Promise.defer();
+		
 		Zotero.debug("Initializing translators");
 		var start = new Date;
 		
 		_cache = {"import":[], "export":[], "web":[], "webWithTargetAll":[], "search":[]};
 		_translators = {};
 		
-		var sql = "SELECT fileName, metadataJSON, lastModifiedTime FROM translatorCache";
+		var sql = "SELECT rowid, fileName, metadataJSON, lastModifiedTime FROM translatorCache";
 		var dbCacheResults = yield Zotero.DB.queryAsync(sql);
 		var dbCache = {};
 		for (let i = 0; i < dbCacheResults.length; i++) {
@@ -97,14 +116,27 @@ Zotero.Translators = new function() {
 					
 					// Get JSON from cache if possible
 					if (memCacheJSON || dbCacheEntry) {
-						var translator = Zotero.Translators.load(
-							memCacheJSON || dbCacheEntry.metadataJSON, path
-						);
+						try {
+							var translator = this.load(
+								memCacheJSON || dbCacheEntry.metadataJSON, path
+							);
+						}
+						catch (e) {
+							Zotero.logError(e);
+							Zotero.debug(memCacheJSON || dbCacheEntry.metadataJSON, 1);
+							
+							// If JSON is invalid, clear from cache
+							yield Zotero.DB.queryAsync(
+								"DELETE FROM translatorCache WHERE fileName=?",
+								fileName
+							);
+							continue;
+						}
 					}
 					// Otherwise, load from file
 					else {
 						try {
-							var translator = yield Zotero.Translators.loadFromFile(path);
+							var translator = yield this.loadFromFile(path);
 						}
 						catch (e) {
 							Zotero.logError(e);
@@ -149,20 +181,20 @@ Zotero.Translators = new function() {
 					
 					// add to cache
 					_translators[translator.translatorID] = translator;
-					for (let type in TRANSLATOR_TYPES) {
-						if (translator.translatorType & TRANSLATOR_TYPES[type]) {
+					for (let type in Zotero.Translator.TRANSLATOR_TYPES) {
+						if (translator.translatorType & Zotero.Translator.TRANSLATOR_TYPES[type]) {
 							_cache[type].push(translator);
-							if ((translator.translatorType & TRANSLATOR_TYPES.web) && translator.targetAll) {
+							if ((translator.translatorType & Zotero.Translator.TRANSLATOR_TYPES.web) && translator.targetAll) {
 								_cache.webWithTargetAll.push(translator);
 							}
 						}
 					}
 					
 					if (!dbCacheEntry) {
-						yield Zotero.Translators.cacheInDB(
+						yield this.cacheInDB(
 							fileName,
-							translator.serialize(TRANSLATOR_REQUIRED_PROPERTIES.
-												 concat(TRANSLATOR_OPTIONAL_PROPERTIES)),
+							translator.serialize(Zotero.Translator.TRANSLATOR_REQUIRED_PROPERTIES.
+												 concat(Zotero.Translator.TRANSLATOR_OPTIONAL_PROPERTIES)),
 							lastModifiedTime
 						);
 					}
@@ -179,7 +211,8 @@ Zotero.Translators = new function() {
 		for (let fileName in dbCache) {
 			if (!filesInCache[fileName]) {
 				yield Zotero.DB.queryAsync(
-					"DELETE FROM translatorCache WHERE fileName = ?", fileName
+					"DELETE FROM translatorCache WHERE rowid=?",
+					dbCache[fileName].rowid
 				);
 			}
 		}
@@ -199,12 +232,18 @@ Zotero.Translators = new function() {
 			_cache[type].sort(cmp);
 		}
 		
+		_initializationDeferred.resolve();
 		_initialized = true;
 		
 		Zotero.debug("Cached " + numCached + " translators in " + ((new Date) - start) + " ms");
 	});
-	this.init = Zotero.lazy(this.reinit);
-
+	
+	
+	this.reinit = function (options = {}) {
+		return this.init(Object.assign({}, options, { reinit: true }));
+	};
+	
+	
 	/**
 	 * Loads a translator from JSON, with optional code
 	 *
@@ -224,15 +263,15 @@ Zotero.Translators = new function() {
 	 *
 	 * @param {String} file - Path to translator file
 	 */
-	this.loadFromFile = function(path) {
+	this.loadFromFile = async function (path) {
 		const infoRe = /^\s*{[\S\s]*?}\s*?[\r\n]/;
-		return Zotero.File.getContentsAsync(path)
-		.then(function(source) {
-			return Zotero.Translators.load(infoRe.exec(source)[0], path, source);
-		})
-		.catch(function() {
-			throw "Invalid or missing translator metadata JSON object in " + OS.Path.basename(path);
-		});
+		try {
+			let source = await Zotero.File.getContentsAsync(path);
+			return this.load(infoRe.exec(source)[0], path, source);
+		}
+		catch (e) {
+			throw new Error("Invalid or missing translator metadata JSON object in " + OS.Path.basename(path));
+		}
 	}
 	
 	/**
@@ -278,20 +317,18 @@ Zotero.Translators = new function() {
 		
 		return this.getAllForType(type).then(function(allTranslators) {
 			var potentialTranslators = [];
-			var translatorConverterFunctions = [];
+			var proxies = [];
 			
-			var rootSearchURIs = this.getSearchURIs(rootURI);
-			var frameSearchURIs = isFrame ? this.getSearchURIs(URI) : rootSearchURIs;
+			var rootSearchURIs = Zotero.Proxies.getPotentialProxies(rootURI);
+			var frameSearchURIs = isFrame ? Zotero.Proxies.getPotentialProxies(URI) : rootSearchURIs;
 			
 			Zotero.debug("Translators: Looking for translators for "+Object.keys(frameSearchURIs).join(', '));
 			
 			for (let translator of allTranslators) {
-				translatorLoop:
+				rootURIsLoop:
 				for (let rootSearchURI in rootSearchURIs) {
-					let isGeneric = (!translator.webRegexp.root && translator.runMode === Zotero.Translator.RUN_MODE_IN_BROWSER);
-					if (!isGeneric && !translator.webRegexp.root) {
-						continue;
-					}
+					let isGeneric = !translator.webRegexp.root;
+					
 					let rootURIMatches = isGeneric || rootSearchURI.length < 8192 && translator.webRegexp.root.test(rootSearchURI);
 					if (translator.webRegexp.all && rootURIMatches) {
 						for (let frameSearchURI in frameSearchURIs) {
@@ -299,21 +336,21 @@ Zotero.Translators = new function() {
 								
 							if (frameURIMatches) {
 								potentialTranslators.push(translator);
-								translatorConverterFunctions.push(frameSearchURIs[frameSearchURI]);
+								proxies.push(frameSearchURIs[frameSearchURI]);
 								// prevent adding the translator multiple times
-								break translatorLoop;
+								break rootURIsLoop;
 							}
 						}
 					}
 					else if(!isFrame && (isGeneric || rootURIMatches)) {
 						potentialTranslators.push(translator);
-						translatorConverterFunctions.push(rootSearchURIs[rootSearchURI]);
+						proxies.push(rootSearchURIs[rootSearchURI]);
 						break;
 					}
 				}
 			}
 			
-			return [potentialTranslators, translatorConverterFunctions];
+			return [potentialTranslators, proxies];
 		}.bind(this));
 	},
 
@@ -366,7 +403,7 @@ Zotero.Translators = new function() {
 	 *     otherwise true
 	 */
 	this.getImportTranslatorsForLocation = function(location, callback) {	
-		return Zotero.Translators.getAllForType("import").then(function(allTranslators) {
+		return this.getAllForType("import").then(function(allTranslators) {
 			var tier1Translators = [];
 			var tier2Translators = [];
 			
@@ -400,6 +437,10 @@ Zotero.Translators = new function() {
 		}
 		return fileName;
 	}
+	
+	this.getTranslatorsDirectory = function () {
+		return Zotero.getTranslatorsDirectory().path;
+	};
 	
 	/**
 	 * @param	{String}		metadata
@@ -453,18 +494,22 @@ Zotero.Translators = new function() {
 			throw new Error("code not provided");
 		}
 		
-		var fileName = Zotero.Translators.getFileNameFromLabel(
+		var fileName = this.getFileNameFromLabel(
 			metadata.label, metadata.translatorID
 		);
-		var destFile = OS.Path.join(Zotero.getTranslatorsDirectory().path, fileName);
+		var destFile = OS.Path.join(this.getTranslatorsDirectory(), fileName);
 		
 		// JSON.stringify has the benefit of indenting JSON
 		var metadataJSON = JSON.stringify(metadata, null, "\t");
 		
-		var str = metadataJSON + "\n\n" + code,
-			translator;
+		var str = metadataJSON + "\n\n" + code;
 		
-		var translator = Zotero.Translators.get(metadata.translatorID);
+		// Make sure file ends with newline
+		if (!str.endsWith('\n')) {
+			str += '\n';
+		}
+		
+		var translator = this.get(metadata.translatorID);
 		var sameFile = translator && destFile == translator.path;
 		
 		var exists = yield OS.File.exists(destFile);
@@ -478,13 +523,30 @@ Zotero.Translators = new function() {
 		
 		Zotero.debug("Saving translator '" + metadata.label + "'");
 		Zotero.debug(metadata);
-		return Zotero.File.putContentsAsync(destFile, str).return(destFile);
+		return Zotero.File.putContentsAsync(destFile, str).then(() => destFile);
 	});
 	
 	this.cacheInDB = function(fileName, metadataJSON, lastModifiedTime) {
 		return Zotero.DB.queryAsync(
 			"REPLACE INTO translatorCache VALUES (?, ?, ?)",
 			[fileName, JSON.stringify(metadataJSON), lastModifiedTime]
+		);
+	}
+	
+	this.makeTranslatorProvider = function (methods) {
+		var requiredMethods = [
+			'get',
+			'getAllForType'
+		];
+		for (let method of requiredMethods) {
+			if (!(method in methods)) {
+				throw new Error(`Translator provider method ${method} not provided`);
+			}
+		}
+		return Object.assign(
+			{},
+			this,
+			methods
 		);
 	}
 }

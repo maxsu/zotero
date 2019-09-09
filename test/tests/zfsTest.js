@@ -132,7 +132,7 @@ describe("Zotero.Sync.Storage.Mode.ZFS", function () {
 			assert.equal(library.storageVersion, library.libraryVersion);
 		})
 		
-		it("should ignore a remotely missing file", function* () {
+		it("should ignore download for a remotely missing file", function* () {
 			var { engine, client, caller } = yield setup();
 			
 			var library = Zotero.Libraries.userLibrary;
@@ -163,6 +163,40 @@ describe("Zotero.Sync.Storage.Mode.ZFS", function () {
 			assert.isFalse(library.storageDownloadNeeded);
 			assert.equal(library.storageVersion, library.libraryVersion);
 		})
+		
+		it("shouldn't update storageVersion if stopped", function* () {
+			var { engine, client, caller } = yield setup();
+			
+			var library = Zotero.Libraries.userLibrary;
+			library.libraryVersion = 5;
+			yield library.saveTx();
+			library.storageDownloadNeeded = true;
+			
+			var items = [];
+			for (let i = 0; i < 5; i++) {
+				let item = new Zotero.Item("attachment");
+				item.attachmentLinkMode = 'imported_file';
+				item.attachmentPath = 'storage:test.txt';
+				item.attachmentSyncState = "to_download";
+				yield item.saveTx();
+				items.push(item);
+			}
+			
+			var call = 0;
+			var stub = sinon.stub(engine.controller, 'downloadFile').callsFake(function () {
+				call++;
+				if (call == 1) {
+					engine.stop();
+				}
+				return new Zotero.Sync.Storage.Result;
+			});
+			
+			var result = yield engine.start();
+			
+			stub.restore();
+			
+			assert.equal(library.storageVersion, 0);
+		});
 		
 		it("should handle a remotely failing file", function* () {
 			var { engine, client, caller } = yield setup();
@@ -274,6 +308,11 @@ describe("Zotero.Sync.Storage.Mode.ZFS", function () {
 			var prefix1 = Zotero.Utilities.randomString();
 			var suffix1 = Zotero.Utilities.randomString();
 			var uploadKey1 = Zotero.Utilities.randomString(32, 'abcdef0123456789');
+			
+			let file1Blob = File.createFromFileName ? File.createFromFileName(file1.path) : new File(file1);
+			if (file1Blob.then) {
+				file1Blob = yield file1Blob;
+			}
 			
 			// HTML file with auxiliary image
 			var file2 = OS.Path.join(getTestDataDirectory().path, 'snapshot', 'index.html');
@@ -392,7 +431,16 @@ describe("Zotero.Sync.Storage.Mode.ZFS", function () {
 				// Upload single file to S3
 				else if (req.method == "POST" && req.url == baseURL + "pretend-s3/1") {
 					assert.equal(req.requestHeaders["Content-Type"], contentType1 + fixSinonBug);
-					assert.equal(req.requestBody.size, (new Blob([prefix1, new File(file1), suffix1]).size));
+					assert.equal(
+						req.requestBody.size,
+						(new Blob(
+							[
+								prefix1,
+								file1Blob,
+								suffix1
+							]
+						).size)
+					);
 					req.respond(201, {}, "");
 				}
 				// Upload multi-file ZIP to S3
@@ -670,10 +718,130 @@ describe("Zotero.Sync.Storage.Mode.ZFS", function () {
 			assert.equal(item.attachmentSyncedHash, hash);
 			assert.equal(item.version, newVersion);
 		})
+		
+		
+		it("should retry with If-None-Match on 412 with missing remote hash", function* () {
+			var { engine, client, caller } = yield setup();
+			var zfs = new Zotero.Sync.Storage.Mode.ZFS({
+				apiClient: client
+			})
+			
+			var file = getTestDataDirectory();
+			file.append('test.png');
+			var item = yield Zotero.Attachments.importFromFile({ file });
+			item.version = 5;
+			item.synced = true;
+			item.attachmentSyncedModificationTime = Date.now();
+			item.attachmentSyncedHash = 'bd4c33e03798a7e8bc0b46f8bda74fac'
+			yield item.saveTx();
+			
+			var contentType = 'image/png';
+			var prefix = Zotero.Utilities.randomString();
+			var suffix = Zotero.Utilities.randomString();
+			var uploadKey = Zotero.Utilities.randomString(32, 'abcdef0123456789');
+			
+			var called = 0;
+			// https://github.com/cjohansen/Sinon.JS/issues/607
+			let fixSinonBug = ";charset=utf-8";
+			server.respond(function (req) {
+				// Try with If-Match
+				if (req.method == "POST"
+						&& req.url == `${baseURL}users/1/items/${item.key}/file`
+						&& !req.requestBody.includes('upload=')
+						&& req.requestHeaders["If-Match"] == item.attachmentSyncedHash) {
+					called++;
+					req.respond(
+						412,
+						{
+							"Content-Type": "application/json"
+						},
+						"If-Match set but file does not exist"
+					);
+				}
+				// Retry with If-None-Match
+				else if (req.method == "POST"
+						&& req.url == `${baseURL}users/1/items/${item.key}/file`
+						&& !req.requestBody.includes('upload=')
+						&& req.requestHeaders["If-None-Match"] == "*") {
+					assert.equal(called++, 1);
+					req.respond(
+						200,
+						{
+							"Content-Type": "application/json"
+						},
+						JSON.stringify({
+							url: baseURL + "pretend-s3/1",
+							contentType: contentType,
+							prefix: prefix,
+							suffix: suffix,
+							uploadKey: uploadKey
+						})
+					);
+				}
+				// Upload file to S3
+				else if (req.method == "POST" && req.url == baseURL + "pretend-s3/1") {
+					assert.equal(called++, 2);
+					req.respond(201, {}, "");
+				}
+				// Use If-None-Match when registering upload
+				else if (req.method == "POST"
+						&& req.url == `${baseURL}users/1/items/${item.key}/file`
+						&& req.requestBody.includes('upload=')) {
+					assert.equal(called++, 3);
+					assert.equal(req.requestHeaders["If-None-Match"], "*");
+					req.respond(
+						204,
+						{
+							"Last-Modified-Version": 10
+						},
+						""
+					);
+				}
+			});
+			
+			var result = yield engine.start();
+			assert.equal(called, 4);
+		});
 	})
 	
 	
 	describe("#_processUploadFile()", function () {
+		it("should handle 404 from upload authorization request", function* () {
+			var { engine, client, caller } = yield setup();
+			var zfs = new Zotero.Sync.Storage.Mode.ZFS({
+				apiClient: client
+			})
+			
+			var filePath = OS.Path.join(getTestDataDirectory().path, 'test.png');
+			var item = yield Zotero.Attachments.importFromFile({ file: filePath });
+			item.version = 5;
+			item.synced = true;
+			yield item.saveTx();
+			
+			var itemJSON = item.toResponseJSON();
+			itemJSON.data.mtime = yield item.attachmentModificationTime;
+			itemJSON.data.md5 = yield item.attachmentHash;
+			
+			server.respond(function (req) {
+				if (req.method == "POST"
+						&& req.url == `${baseURL}users/1/items/${item.key}/file`
+						&& !req.requestBody.includes('upload=')) {
+					req.respond(
+						404,
+						{
+							"Last-Modified-Version": 5
+						},
+						"Not Found"
+					);
+				}
+			})
+			
+			var result = yield zfs._processUploadFile({
+				name: item.libraryKey
+			});
+			assert.isTrue(result.syncRequired);
+		});
+		
 		it("should handle 412 with matching version and hash matching local file", function* () {
 			var { engine, client, caller } = yield setup();
 			var zfs = new Zotero.Sync.Storage.Mode.ZFS({
@@ -817,7 +985,8 @@ describe("Zotero.Sync.Storage.Mode.ZFS", function () {
 			assert.isFalse(result.localChanges);
 			assert.isFalse(result.remoteChanges);
 			assert.isTrue(result.syncRequired);
-		})
+		});
+		
 		
 		it("should handle 413 on quota limit", function* () {
 			var { engine, client, caller } = yield setup();
@@ -832,16 +1001,20 @@ describe("Zotero.Sync.Storage.Mode.ZFS", function () {
 			item.synced = true;
 			yield item.saveTx();
 			
+			var responses = 0;
 			server.respond(function (req) {
 				if (req.method == "POST"
 						&& req.url == `${baseURL}users/1/items/${item.key}/file`
 						&& req.requestBody.indexOf('upload=') == -1
 						&& req.requestHeaders["If-None-Match"] == "*") {
+					responses++;
 					req.respond(
 						413,
 						{
 							"Content-Type": "application/json",
-							"Last-Modified-Version": 10
+							"Last-Modified-Version": 10,
+							"Zotero-Storage-Usage": "300",
+							"Zotero-Storage-Quota": "300"
 						},
 						"File would exceed quota (299.7 + 0.5 &gt; 300)"
 					);
@@ -855,6 +1028,19 @@ describe("Zotero.Sync.Storage.Mode.ZFS", function () {
 			assert.equal(e.errorType, 'warning');
 			assert.include(e.message, 'test.png');
 			assert.equal(e.dialogButtonText, Zotero.getString('sync.storage.openAccountSettings'));
+			assert.equal(responses, 1);
+			
+			// Try again
+			var e = yield getPromiseError(zfs.uploadFile({
+				name: item.libraryKey
+			}));
+			assert.ok(e);
+			assert.equal(e.errorType, 'warning');
+			assert.include(e.message, 'test.png');
+			assert.equal(e.dialogButtonText, Zotero.getString('sync.storage.openAccountSettings'));
+			// Shouldn't have been another request. A manual sync resets the flag, but we're not
+			// testing that here.
+			assert.equal(responses, 1);
 		})
 	})
 })

@@ -26,22 +26,48 @@
 "use strict";
 
 Zotero_Preferences.Cite = {
+	wordPluginIDs: new Set([
+		'zoteroOpenOfficeIntegration@zotero.org',
+		'zoteroMacWordIntegration@zotero.org',
+		'zoteroWinWordIntegration@zotero.org'
+	]),
+
 	init: Zotero.Promise.coroutine(function* () {
+		Components.utils.import("resource://gre/modules/AddonManager.jsm");
 		this.updateWordProcessorInstructions();
 		yield this.refreshStylesList();
 	}),
 	
 	
 	/**
-	 * Determines if there are word processors, and if not, enables no word processor message
+	 * Determines if any word processors are disabled and if so, shows a message in the pref pane
 	 */
-	updateWordProcessorInstructions: function () {
-		if(document.getElementById("wordProcessors").childNodes.length == 2) {
-			document.getElementById("wordProcessors-noWordProcessorPluginsInstalled").hidden = undefined;
+	updateWordProcessorInstructions: async function () {
+		var someDisabled = false;
+		await new Promise(function(resolve) {
+			AddonManager.getAllAddons(function(addons) {
+				for (let addon of addons) {
+					if (Zotero_Preferences.Cite.wordPluginIDs.has(addon.id) && addon.userDisabled) {
+						someDisabled = true;
+					}
+				}
+				resolve();
+			});
+		});
+		if (someDisabled) {
+			document.getElementById("wordProcessors-somePluginsDisabled").hidden = undefined;
 		}
-		if(Zotero.isStandalone) {
-			document.getElementById("wordProcessors-getWordProcessorPlugins").hidden = true;
-		}
+	},
+	
+	enableWordPlugins: function () {
+		AddonManager.getAllAddons(function(addons) {
+			for (let addon of addons) {
+				if (Zotero_Preferences.Cite.wordPluginIDs.has(addon.id) && addon.userDisabled) {
+					addon.userDisabled = false;
+				}
+			}
+			return Zotero.Utilities.Internal.quit(true);
+		});
 	},
 	
 	
@@ -90,6 +116,20 @@ Zotero_Preferences.Cite = {
 	}),
 	
 	
+	openStylesPage: function () {
+		Zotero.openInViewer("https://www.zotero.org/styles/", function (doc) {
+			// Hide header, intro paragraph, Link, and Source
+			//
+			// (The first two aren't sent to the client normally, but hide anyway in case they are.)
+			var style = doc.createElement('style');
+			style.type = 'text/css';
+			style.innerHTML = 'h1, #intro, .style-individual-link, .style-view-source { display: none !important; }';
+			Zotero.debug(doc.documentElement.innerHTML);
+			doc.getElementsByTagName('head')[0].appendChild(style);
+		});
+	},
+	
+	
 	/**
 	 * Adds a new style to the style pane
 	 **/
@@ -103,7 +143,11 @@ Zotero_Preferences.Cite = {
 		
 		var rv = fp.show();
 		if (rv == nsIFilePicker.returnOK || rv == nsIFilePicker.returnReplace) {
-			Zotero.Styles.install(fp.file);
+			Zotero.Styles.install({ file: fp.file }, fp.file.path, true)
+			.catch(function (e) {
+				(new Zotero.Exception.Alert("styles.install.unexpectedError",
+					fp.file.path, "styles.install.title", e)).present()
+			});
 		}
 	},
 	

@@ -65,9 +65,15 @@
 					switch (val) {
 						case 'view':
 						case 'merge':
+							if (this.noteField) {
+								this.noteField.onInit(ed => ed.setMode('readonly'));
+							}
 							break;
 						
 						case 'edit':
+							if (this.noteField) {
+								this.noteField.onInit(ed => ed.setMode('design'));
+							}
 							this.editable = true;
 							this.saveOnEdit = true;
 							this.parentClickHandler = this.selectParent;
@@ -144,7 +150,7 @@
 			
 			<constructor>
 			<![CDATA[
-				this._instanceID = Zotero.Utilities.randomString();
+				this.instanceID = Zotero.Utilities.randomString();
 				this._notifierID = Zotero.Notifier.registerObserver(this, ['item'], 'noteeditor');
 			]]>
 			</constructor>
@@ -167,9 +173,13 @@
 						if (id != this.item.id) {
 							continue;
 						}
-						if (extraData && extraData[id] && extraData[id].noteEditorID == this._instanceID) {
+						if (extraData && extraData[id] && extraData[id].noteEditorID == this.instanceID) {
 							//Zotero.debug("Skipping notification from current note field");
 							continue;
+						}
+						if (this.noteField.changed) {
+							//Zotero.debug("Note has changed since last save -- skipping refresh");
+							return;
 						}
 						this.refresh();
 						break;
@@ -181,7 +191,7 @@
 				<body><![CDATA[
 					Zotero.debug('Refreshing note editor');
 					
-					var textbox = this._id('noteField');
+					var textbox = this.noteField;
 					var textboxReadOnly = this._id('noteFieldReadOnly');
 					var button = this._id('goButton');
 					
@@ -197,10 +207,13 @@
 					
 					//var scrollPos = textbox.inputField.scrollTop;
 					if (this.item) {
+						// For sanity check in save()
+						textbox.setAttribute('itemID', this.item.id);
 						textbox.value = this.item.getNote();
 					}
 					else {
 						textbox.value = '';
+						textbox.removeAttribute('itemID');
 					}
 					//textbox.inputField.scrollTop = scrollPos;
 					
@@ -236,22 +249,34 @@
 			</method>
 			
 			<method name="save">
-				<body>
-					<![CDATA[
-						return Zotero.spawn(function* () {
+				<body><![CDATA[
+					return Zotero.spawn(function* () {
+						try {
 							if (this._mode == 'view') {
 								Zotero.debug("Not saving read-only note");
 								return;
 							}
 							
-							// Update note
 							var noteField = this._id('noteField');
+							var value = noteField.value;
+							if (value === null) {
+								Zotero.debug("Note value not available -- not saving", 2);
+								return;
+							}
+							
+							// Update note
 							if (this.item) {
-								let changed = this.item.setNote(noteField.value);
+								// If note field doesn't match item, abort save and run error handler
+								if (noteField.getAttribute('itemID') != this.item.id) {
+									throw new Error("Note field doesn't match current item");
+								}
+								
+								let changed = this.item.setNote(value);
 								if (changed && this.saveOnEdit) {
+									this.noteField.changed = false;
 									yield this.item.saveTx({
 										notifierData: {
-											noteEditorID: this._instanceID
+											noteEditorID: this.instanceID
 										}
 									});
 								}
@@ -263,7 +288,7 @@
 							if (this.parentItem) {
 								item.libraryID = this.parentItem.libraryID;
 							}
-							item.setNote(noteField.value);
+							item.setNote(value);
 							if (this.parentItem) {
 								item.parentKey = this.parentItem.key;
 							}
@@ -275,10 +300,21 @@
 								}
 							}
 							
-							this.item = yield Zotero.Items.getAsync(id);
-						}.bind(this));
-					]]>
-				</body>
+							this.item = item;
+						}
+						catch (e) {
+							Zotero.logError(e);
+							
+							if (this.hasAttribute('onerror')) {
+								let fn = new Function("", this.getAttribute('onerror'));
+								fn.call(this)
+							}
+							if (this.onError) {
+								this.onError(e);
+							}
+						}
+					}.bind(this));
+				]]></body>
 			</method>
 			
 			<!-- Used to insert a tab manually -->
@@ -286,47 +322,26 @@
 				<parameter name="event"/>
 				<body>
 				<![CDATA[
+					var noteField = this._id('noteField');
+					
 					switch (event.keyCode) {
 						case 9:
-							if (event.ctrlKey || event.altKey) {
-								return;
-							}
-							
-							event.stopPropagation();
-							event.preventDefault();
-							
-							// On shift-tab, focus the element specified in
-							// the 'previousfocus' attribute
+							// On Shift-Tab, if focus was moved out of the note, focus the element
+							// specified in the 'previousfocus' attribute. We check for focus
+							// because Shift-Tab doesn't and shouldn't move focus out of the note if
+							// the cursor is in a list.
 							if (event.shiftKey) {
 								let id = this.getAttribute('previousfocus');
 								if (id) {
-									setTimeout(function () {
-										document.getElementById(id).focus();
+									setTimeout(() => {
+										if (!noteField.hasFocus()) {
+											document.getElementById(id).focus();
+										}
 									}, 0);
 								}
 								return;
 							}
 							
-							// Insert tab manually
-							//
-							// From http://kb.mozillazine.org/Inserting_text_at_cursor
-							try {
-								var command = "cmd_insertText";
-								var controller = document.commandDispatcher.getControllerForCommand(command);
-								if (controller && controller.isCommandEnabled(command)) {
-									controller = controller.QueryInterface(Components.interfaces.nsICommandController);
-									var params = Components.classes["@mozilla.org/embedcomp/command-params;1"]
-										.createInstance(Components.interfaces.nsICommandParams);
-									params.setStringValue("state_data", "\t");
-									controller.doCommandWithParams(command, params);
-								}
-							}
-							catch (e) {
-								Zotero.debug("Can't do cmd_insertText!\n" + e, 1);
-							}
-							
-							// DEBUG: is there a better way to prevent blur()?
-							setTimeout(function() { event.target.focus(); }, 1);
 							break;
 					}
 				]]>
@@ -425,7 +440,7 @@
 					// If editable and no existing tags, open new empty row
 					var tagsBox = this.id('tags');
 					if (tagsBox.mode == 'edit' && tagsBox.count == 0) {
-						this.id('tags').new();
+						this.id('tags').newTag();
 					}
 				]]></body>
 			</method>
@@ -543,7 +558,7 @@
 					</xul:rows>
 				</xul:grid>
 				<xul:popupset>
-					<xul:menupopup id="relatedPopup" width="300" onpopupshowing="this.firstChild.reload();">
+					<xul:menupopup id="relatedPopup" width="300" onpopupshowing="this.firstChild.refresh();">
 						<xul:relatedbox id="related" flex="1"/>
 					</xul:menupopup>
 					<!-- The onpopup* stuff is an ugly hack to keep track of when the
@@ -556,7 +571,7 @@
 					tagsbox and tagsLabel above, so be sure to update fixPopup() if it changes
 					-->
 					<xul:menupopup id="tagsPopup" ignorekeys="true"
-							onpopupshown="if (!document.commandDispatcher.focusedElement || document.commandDispatcher.focusedElement.tagName=='xul:label'){ /* DEBUG: it would be nice to make this work -- if (this.firstChild.count==0){ this.firstChild.new(); } */ this.setAttribute('showing', 'true'); }"
+							onpopupshown="if (!document.commandDispatcher.focusedElement || document.commandDispatcher.focusedElement.tagName=='xul:label'){ /* DEBUG: it would be nice to make this work -- if (this.firstChild.count==0){ this.firstChild.newTag(); } */ this.setAttribute('showing', 'true'); }"
 							onpopuphidden="if (!document.commandDispatcher.focusedElement || document.commandDispatcher.focusedElement.tagName=='xul:label'){ this.setAttribute('showing', 'false'); }">
 						<xul:tagsbox id="tags" flex="1" mode="edit"/>
 					</xul:menupopup>

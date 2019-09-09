@@ -27,6 +27,9 @@
 Zotero.Report = {};
 
 Zotero.Report.HTML = new function () {
+	let domParser = Components.classes["@mozilla.org/xmlextras/domparser;1"]
+		.createInstance(Components.interfaces.nsIDOMParser);
+	
 	this.listGenerator = function* (items, combineChildItems) {
 		yield '<!DOCTYPE html>\n'
 			+ '<html>\n'
@@ -43,7 +46,7 @@ Zotero.Report.HTML = new function () {
 		for (let i=0; i<items.length; i++) {
 			let obj = items[i];
 			
-			let content = '\n\t\t\t<li id="item_' + obj.itemKey + '" class="item ' + obj.itemType + '">\n';
+			let content = '\n\t\t\t<li id="item_' + obj.key + '" class="item ' + obj.itemType + '">\n';
 			
 			if (obj.title) {
 				// Top-level item matched search, so display title
@@ -66,26 +69,7 @@ Zotero.Report.HTML = new function () {
 				// Independent note
 				if (obj['note']) {
 					content += '\n\t\t\t';
-					
-					// If not valid XML, display notes with entities encoded
-					var parser = Components.classes["@mozilla.org/xmlextras/domparser;1"]
-							.createInstance(Components.interfaces.nsIDOMParser);
-					var doc = parser.parseFromString('<div>'
-						+ obj.note
-							// &nbsp; isn't valid in HTML
-							.replace(/&nbsp;/g, "&#160;")
-							// Strip control characters (for notes that were
-							// added before item.setNote() started doing this)
-							.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
-					+ '</div>', "application/xml");
-					if (doc.documentElement.tagName == 'parsererror') {
-						Zotero.debug(doc.documentElement.textContent, 2);
-						content += '<p class="plaintext">' + escapeXML(obj.note) + '</p>\n';
-					}
-					// Otherwise render markup normally
-					else {
-						content += obj.note + '\n';
-					}
+					content += getNoteHTML(obj.note);
 				}
 			}
 			
@@ -98,27 +82,10 @@ Zotero.Report.HTML = new function () {
 						content += '\t\t\t\t<h3 class="notes">' + escapeXML(Zotero.getString('report.notes')) + '</h3>\n';
 					}
 					content += '\t\t\t\t<ul class="notes">\n';
-					for each(var note in obj.reportChildren.notes) {
-						content += '\t\t\t\t\t<li id="item_' + note.itemKey + '">\n';
+					for (let note of obj.reportChildren.notes) {
+						content += '\t\t\t\t\t<li id="item_' + note.key + '">\n';
 						
-						// If not valid XML, display notes with entities encoded
-						var parser = Components.classes["@mozilla.org/xmlextras/domparser;1"]
-								.createInstance(Components.interfaces.nsIDOMParser);
-						var doc = parser.parseFromString('<div>'
-							+ note.note
-								.replace(/&nbsp;/g, "&#160;")
-								// Strip control characters (for notes that were
-								// added before item.setNote() started doing this)
-								.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
-						 + '</div>', "application/xml");
-						if (doc.documentElement.tagName == 'parsererror') {
-							Zotero.debug(doc.documentElement.textContent, 2);
-							content += '<p class="plaintext">' + escapeXML(note.note) + '</p>\n';
-						}
-						// Otherwise render markup normally
-						else {
-							content += note.note + '\n';
-						}
+						content += getNoteHTML(note.note);
 						
 						// Child note tags
 						content += _generateTagsList(note);
@@ -143,7 +110,7 @@ Zotero.Report.HTML = new function () {
 				}
 				for (let i=0; i<rels.length; i++) {
 					let rel = rels[i];
-					let relItem = Zotero.URI.getURIItem(rel);
+					let relItem = yield Zotero.URI.getURIItem(rel);
 					if (relItem) {
 						content += '\t\t\t\t\t<li id="item_' + relItem.key + '">';
 						content += escapeXML(relItem.getDisplayTitle());
@@ -180,7 +147,7 @@ Zotero.Report.HTML = new function () {
 			table = true;
 			var displayText;
 			
-			for each(var creator in obj['creators']) {
+			for (let creator of obj['creators']) {
 				// One field
 				if (creator.name !== undefined) {
 					displayText = creator.name;
@@ -306,7 +273,7 @@ Zotero.Report.HTML = new function () {
 			for (let i=0; i<obj.attachments.length; i++) {
 				let attachment = obj.attachments[i];
 				
-				content += '\t\t\t\t\t<li id="item_' + attachment.itemKey + '">';
+				content += '\t\t\t\t\t<li id="item_' + attachment.key + '">';
 				if (attachment.title !== undefined) {
 					content += escapeXML(attachment.title);
 				}
@@ -317,13 +284,7 @@ Zotero.Report.HTML = new function () {
 				// Attachment note
 				if (attachment.note) {
 					content += '\t\t\t\t\t\t<div class="note">';
-					if (attachment.note.substr(0, 1024).match(/<p[^>]*>/)) {
-						content += attachment.note + '\n';
-					}
-					// Wrap plaintext notes in <p>
-					else {
-						content += '<p class="plaintext">' + escapeXML(attachment.note) + '</p>\n';
-					}
+					content += getNoteHTML(attachment.note);
 					content += '\t\t\t\t\t</div>';
 				}
 				
@@ -332,6 +293,22 @@ Zotero.Report.HTML = new function () {
 			content += '\t\t\t\t</ul>\n';
 		}
 		return content;
+	}
+	
+	
+	function getNoteHTML(note) {
+		// If HTML tag or entity, parse as HTML
+		if (note.match(/(<(p|ul|ol|div|a|br|b|i|u|strong|em( >))|&[a-z]+;|&#[0-9]+;)/)) {
+			let doc = domParser.parseFromString('<div>'
+				+ note
+					// Strip control characters (for notes that were
+					// added before item.setNote() started doing this)
+					.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+			 + '</div>', "text/html");
+			return doc.body.innerHTML + '\n';
+		}
+		// Otherwise, treat as plain text
+		return '<p class="plaintext">' + escapeXML(note) + '</p>\n';
 	}
 	
 	

@@ -31,16 +31,33 @@ Zotero.Creators = new function() {
 	var _cache = {};
 	
 	this.init = Zotero.Promise.coroutine(function* () {
+		var repaired = false;
 		var sql = "SELECT * FROM creators";
 		var rows = yield Zotero.DB.queryAsync(sql);
 		for (let i = 0; i < rows.length; i++) {
 			let row = rows[i];
-			_cache[row.creatorID] = this.cleanData({
-				// Avoid "DB column 'name' not found" warnings from the DB row Proxy
-				firstName: row.firstName,
-				lastName: row.lastName,
-				fieldMode: row.fieldMode
-			});
+			try {
+				_cache[row.creatorID] = this.cleanData({
+					// Avoid "DB column 'name' not found" warnings from the DB row Proxy
+					firstName: row.firstName,
+					lastName: row.lastName,
+					fieldMode: row.fieldMode
+				});
+			}
+			catch (e) {
+				// Automatically fix DB errors and try again
+				if (!repaired) {
+					Zotero.logError(e);
+					Zotero.logError("Trying integrity check to fix creator error");
+					yield Zotero.Schema.integrityCheck(true);
+					repaired = true;
+					rows = yield Zotero.DB.queryAsync(sql);
+					i = -1;
+					continue;
+				}
+				
+				throw e;
+			}
 		}
 	});
 	
@@ -165,13 +182,14 @@ Zotero.Creators = new function() {
 		if (data.name !== undefined && data.fieldMode === 0) {
 			throw new Error("'fieldMode' cannot be 0 with 'name' property");
 		}
-		if (data.fieldMode === 1 && !(data.firstName === undefined || data.firstName === "")) {
+		if (data.fieldMode === 1
+				&& !(data.firstName === undefined || data.firstName === "" || data.firstName === null)) {
 			throw new Error("'fieldMode' cannot be 1 with 'firstName' property");
 		}
 		if (data.name !== undefined && typeof data.name != 'string') {
 			throw new Error("'name' must be a string");
 		}
-		if (data.firstName !== undefined && typeof data.firstName != 'string') {
+		if (data.firstName !== undefined && data.firstName !== null && typeof data.firstName != 'string') {
 			throw new Error("'firstName' must be a string");
 		}
 		if (data.lastName !== undefined && typeof data.lastName != 'string') {
@@ -189,7 +207,7 @@ Zotero.Creators = new function() {
 			switch (field) {
 			case 'firstName':
 			case 'lastName':
-				if (val === undefined) continue;
+				if (val === undefined || val === null) continue;
 				cleanedData[field] = val.trim().normalize();
 				break;
 			

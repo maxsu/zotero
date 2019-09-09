@@ -1,3 +1,5 @@
+Components.utils.import("resource://gre/modules/Services.jsm");
+Services.scriptloader.loadSubScript("resource://zotero/polyfill.js");
 Components.utils.import("resource://gre/modules/osfile.jsm");
 var EventUtils = Components.utils.import("resource://zotero-unit/EventUtils.jsm");
 
@@ -139,9 +141,9 @@ function Reporter(runner) {
 		let indentStr = indent();
 		dump("\r" + indentStr
 			// Dark red X for errors
-			+ "\033[31;40m" + Mocha.reporters.Base.symbols.err + " [FAIL]\033[0m"
+			+ "\x1B[31;40m" + Mocha.reporters.Base.symbols.err + " [FAIL]\x1B[0m"
 			// Trigger bell if interactive
-			+ (Zotero.automatedTest ? "" : "\007")
+			+ (Zotero.automatedTest ? "" : "\x07")
 			+ " " + test.title + "\n"
 			+ indentStr + "  " + err.toString() + " at\n"
 			+ err.stack.replace(/^/gm, indentStr + "    "));
@@ -159,21 +161,6 @@ function Reporter(runner) {
 	});
 }
 
-// Monkey-patch Mocha to check instanceof Error using compartment-local
-// Error object
-Mocha.Runner.prototype.fail = function(test, err){
-	++this.failures;
-	test.state = 'failed';
-
-	if ('string' == typeof err) {
-		err = new Error('the string "' + err + '" was thrown, throw an Error :)');
-	} else if (!(err instanceof Components.utils.getGlobalForObject(err).Error)) {
-		err = new Error('the ' + Mocha.utils.type(err) + ' ' + Mocha.utils.stringify(err) + ' was thrown, throw an Error :)');
-	}
-
-	this.emit('fail', test, err);
-};
-
 // Setup Mocha
 mocha.setup({
 	ui: "bdd",
@@ -182,19 +169,41 @@ mocha.setup({
 	grep: ZoteroUnit.grep
 });
 
-// Enable Bluebird generator support in Mocha
-(function () {
-	var Runnable = Mocha.Runnable;
-	var run = Runnable.prototype.run;
-	Runnable.prototype.run = function (fn) {
-		if (this.fn.constructor.name === 'GeneratorFunction') {
-			this.fn = Zotero.Promise.coroutine(this.fn);
-		} else if (typeof this.fn == 'function' && this.fn.isGenerator()) {
-			throw new Error("Attempting to use a legacy generator in Mocha test");
+coMocha(Mocha);
+
+before(function () {
+	// Store all prefs set in runtests.sh
+	Components.utils.import("resource://zotero/config.js");
+	var prefBranch = Services.prefs.getBranch(ZOTERO_CONFIG.PREF_BRANCH);
+	ZoteroUnit.customPrefs = {};
+	prefBranch.getChildList("", {})
+		.filter(key => prefBranch.prefHasUserValue(key))
+		.forEach(key => ZoteroUnit.customPrefs[key] = Zotero.Prefs.get(key));
+});
+
+/**
+ * Clear all prefs, and reset those set in runtests.sh to original values
+ */
+function resetPrefs() {
+	Components.utils.import("resource://zotero/config.js");
+	var prefBranch = Services.prefs.getBranch(ZOTERO_CONFIG.PREF_BRANCH);
+	prefBranch.getChildList("", {}).forEach(key => {
+		var origVal = ZoteroUnit.customPrefs[key];
+		if (origVal !== undefined) {
+			if (origVal != Zotero.Prefs.get(key)) {
+				Zotero.Prefs.set(key, ZoteroUnit.customPrefs[key]);
+			}
 		}
-		return run.call(this, fn);
-	};
-})();
+		else if (prefBranch.prefHasUserValue(key)) {
+			Zotero.Prefs.clear(key)
+		}
+	});
+}
+
+afterEach(function () {
+	resetPrefs();
+});
+
 
 var assert = chai.assert,
     expect = chai.expect;
@@ -202,25 +211,49 @@ var assert = chai.assert,
 // Set up tests to run
 var run = ZoteroUnit.runTests;
 if(run && ZoteroUnit.tests) {
+	function getTestFilename(test) {
+		// Allow foo, fooTest, fooTest.js, and tests/fooTest.js
+		test = test.replace(/\.js$/, "");
+		test = test.replace(/Test$/, "");
+		test = test.replace(/^tests[/\\]/, "");
+		return test + "Test.js";
+	}
+	
 	var testDirectory = getTestDataDirectory().parent,
 	    testFiles = [];
 	if(ZoteroUnit.tests == "all") {
 		var enumerator = testDirectory.directoryEntries;
+		let startFile = ZoteroUnit.startAt ? getTestFilename(ZoteroUnit.startAt) : false;
+		let started = !startFile;
+		let stopFile = ZoteroUnit.stopAt ? getTestFilename(ZoteroUnit.stopAt) : false;
 		while(enumerator.hasMoreElements()) {
 			var file = enumerator.getNext().QueryInterface(Components.interfaces.nsIFile);
-			if(file.leafName.endsWith(".js")) {
+			if (file.leafName.endsWith(".js")) {
 				testFiles.push(file.leafName);
 			}
 		}
 		testFiles.sort();
+		
+		// Find the start and stop files
+		let startPos = 0;
+		let stopPos = testFiles.length - 1;
+		for (let i = 0; i < testFiles.length; i++) {
+			if (testFiles[i] == startFile) {
+				startPos = i;
+			}
+			if (testFiles[i] == stopFile) {
+				stopPos = i;
+				break;
+			}
+		}
+		if (startFile && startPos == 0 && startFile != testFiles[0]) {
+			dump(`Invalid start file ${startFile}\n`);
+		}
+		testFiles = testFiles.slice(startPos, stopPos + 1);
 	} else {
 		var specifiedTests = ZoteroUnit.tests.split(",");
 		for (let test of specifiedTests) {
-			// Allow foo, fooTest, fooTest.js, and tests/fooTest.js
-			test = test.replace(/\.js$/, "");
-			test = test.replace(/Test$/, "");
-			test = test.replace(/^tests[/\\]/, "");
-			let fname = test + "Test.js";
+			let fname = getTestFilename(test);
 			let file = testDirectory.clone();
 			file.append(fname);
 			if (!file.exists()) {
@@ -246,45 +279,7 @@ if(run) {
 		Zotero.spawn(function* () {
 			yield Zotero.Schema.schemaUpdatePromise;
 			
-			// Download and cache PDF tools for this platform
-			//
-			// To reset, delete test/tests/data/pdf/ directory
-			var cachePDFTools = Zotero.Promise.coroutine(function* () {
-				var path = OS.Path.join(getTestDataDirectory().path, 'pdf');
-				yield OS.File.makeDir(path, { ignoreExisting: true });
-				
-				var baseURL = Zotero.Fulltext.pdfToolsDownloadBaseURL;
-				// Point full-text code to the cache directory, so downloads come from there
-				Zotero.Fulltext.pdfToolsDownloadBaseURL = OS.Path.toFileURI(path) + "/";
-				
-				// Get latest tools version for the current platform
-				yield Zotero.File.download(baseURL + 'latest.json', OS.Path.join(path, 'latest.json'));
-				
-				var platform = Zotero.platform.replace(/\s/g, '-');
-				var version = yield Zotero.Fulltext.getLatestPDFToolsVersion();
-				
-				// Create version directory (e.g., data/pdf/3.04) and download tools to it if
-				// they don't exist
-				yield OS.File.makeDir(OS.Path.join(path, version), { ignoreExisting: true });
-				
-				var fileName = "pdfinfo-" + platform + (Zotero.isWin ? ".exe" : "");
-				var execPath = OS.Path.join(path, version, fileName);
-				if (!(yield OS.File.exists(execPath))) {
-					yield Zotero.File.download(baseURL + version + "/" + fileName, execPath);
-				}
-				fileName = "pdftotext-" + platform + (Zotero.isWin ? ".exe" : "");;
-				execPath = OS.Path.join(path, version, fileName);
-				if (!(yield OS.File.exists(execPath))) {
-					yield Zotero.File.download(baseURL + version + "/" + fileName, execPath);
-				}
-			});
-			
-			try {
-				yield cachePDFTools();
-			}
-			catch (e) {
-				Zotero.logError(e);
-			}
+			initPDFToolsPath();
 			
 			return mocha.run();
 		})

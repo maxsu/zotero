@@ -74,8 +74,10 @@ function ZoteroProtocolHandler() {
 						Zotero.API.Data.getGenerator(path)
 					);
 				}
-				catch (e if e instanceof Zotero.Router.InvalidPathException) {
-					return "URL could not be parsed";
+				catch (e) {
+					if (e instanceof Zotero.Router.InvalidPathException) {
+						return "URL could not be parsed";	
+					}
 				}
 			});
 		}
@@ -125,7 +127,7 @@ function ZoteroProtocolHandler() {
 				router.add('groups/:groupID/:scopeObject/:scopeObjectKey/items');
 				
 				// All items
-				router.add('library/items', function () {
+				router.add('library/items/:objectKey', function () {
 					params.libraryID = userLibraryID;
 				});
 				router.add('groups/:groupID/items');
@@ -135,7 +137,7 @@ function ZoteroProtocolHandler() {
 					params.scopeObject = 'collections';
 					var lkh = Zotero.Collections.parseLibraryKeyHash(params.id);
 					if (lkh) {
-						params.libraryID = lkh.libraryID;
+						params.libraryID = lkh.libraryID || userLibraryID;
 						params.scopeObjectKey = lkh.key;
 					}
 					else {
@@ -147,7 +149,7 @@ function ZoteroProtocolHandler() {
 					params.scopeObject = 'searches';
 					var lkh = Zotero.Searches.parseLibraryKeyHash(this.id);
 					if (lkh) {
-						params.libraryID = lkh.libraryID;
+						params.libraryID = lkh.libraryID || userLibraryID;
 						params.scopeObjectKey = lkh.key;
 					}
 					else {
@@ -157,7 +159,7 @@ function ZoteroProtocolHandler() {
 				});
 				router.add('items/:ids/html/report.html', function () {
 					var ids = this.ids.split('-');
-					params.libraryID = ids[0].split('_')[0];
+					params.libraryID = ids[0].split('_')[0] || userLibraryID;
 					params.itemKey = ids.map(x => x.split('_')[1]);
 					delete params.ids;
 				});
@@ -190,9 +192,9 @@ function ZoteroProtocolHandler() {
 				var mimeType, content = '';
 				var items = [];
 				var itemsHash = {}; // key = itemID, val = position in |items|
-				var searchItemIDs = {}; // hash of all selected items
-				var searchParentIDs = {}; // hash of parents of selected child items
-				var searchChildIDs = {}; // hash of selected chlid items
+				var searchItemIDs = new Set(); // All selected items
+				var searchParentIDs = new Set(); // Parents of selected child items
+				var searchChildIDs = new Set() // Selected chlid items
 				
 				var includeAllChildItems = Zotero.Prefs.get('report.includeAllChildItems');
 				var combineChildItems = Zotero.Prefs.get('report.combineChildItems');
@@ -203,8 +205,8 @@ function ZoteroProtocolHandler() {
 					// (instead mark their parents for inclusion below)
 					var parentItemID = results[i].parentItemID;
 					if (parentItemID) {
-						searchParentIDs[parentItemID] = true;
-						searchChildIDs[results[i].id] = true;
+						searchParentIDs.add(parentItemID);
+						searchChildIDs.add(results[i].id);
 						
 						// Don't include all child items if any child
 						// items were selected
@@ -221,14 +223,14 @@ function ZoteroProtocolHandler() {
 					else {
 						unhandledParents[i] = true;
 					}
-					searchItemIDs[results[i].id] = true;
+					searchItemIDs.add(results[i].id);
 				}
 				
 				// If including all child items, add children of all matched
 				// parents to the child array
 				if (includeAllChildItems) {
-					for (var id in searchItemIDs) {
-						if (!searchChildIDs[id]) {
+					for (let id of searchItemIDs) {
+						if (!searchChildIDs.has(id)) {
 							var children = [];
 							var item = yield Zotero.Items.getAsync(id);
 							if (!item.isRegularItem()) {
@@ -237,7 +239,7 @@ function ZoteroProtocolHandler() {
 							var func = function (ids) {
 								if (ids) {
 									for (var i=0; i<ids.length; i++) {
-										searchChildIDs[ids[i]] = true;
+										searchChildIDs.add(ids[i]);
 									}
 								}
 							};
@@ -259,8 +261,8 @@ function ZoteroProtocolHandler() {
 				
 				if (combineChildItems) {
 					// Add parents of matches if parents aren't matches themselves
-					for (var id in searchParentIDs) {
-						if (!searchItemIDs[id] && !itemsHash[id]) {
+					for (let id of searchParentIDs) {
+						if (!searchItemIDs.has(id) && !itemsHash[id]) {
 							var item = yield Zotero.Items.getAsync(id);
 							itemsHash[id] = items.length;
 							items.push(item.toJSON({ mode: 'full' }));
@@ -268,8 +270,8 @@ function ZoteroProtocolHandler() {
 					}
 					
 					// Add children to reportChildren property of parents
-					for (var id in searchChildIDs) {
-						var item = yield Zotero.Items.getAsync(id);
+					for (let id of searchChildIDs) {
+						let item = yield Zotero.Items.getAsync(id);
 						var parentID = item.parentID;
 						if (!items[itemsHash[parentID]].reportChildren) {
 							items[itemsHash[parentID]].reportChildren = {
@@ -288,7 +290,7 @@ function ZoteroProtocolHandler() {
 				// If not combining children, add a parent/child pair
 				// for each matching child
 				else {
-					for (var id in searchChildIDs) {
+					for (let id of searchChildIDs) {
 						var item = yield Zotero.Items.getAsync(id);
 						var parentID = item.parentID;
 						var parentItem = Zotero.Items.get(parentID);
@@ -296,7 +298,7 @@ function ZoteroProtocolHandler() {
 						if (!itemsHash[parentID]) {
 							// If parent is a search match and not yet added,
 							// add on its own
-							if (searchItemIDs[parentID]) {
+							if (searchItemIDs.has(parentID)) {
 								itemsHash[parentID] = [items.length];
 								items.push(parentItem.toJSON({ mode: 'full' }));
 								items[items.length - 1].reportSearchMatch = true;
@@ -381,8 +383,8 @@ function ZoteroProtocolHandler() {
 							valB = Zotero.Items.getSortTitle(valB);
 						}
 						else if (sorts[index].field == 'date') {
-							var itemA = Zotero.Items.getByLibraryAndKey(a.libraryID, a.key);
-							var itemB = Zotero.Items.getByLibraryAndKey(b.libraryID, b.key);
+							var itemA = Zotero.Items.getByLibraryAndKey(params.libraryID, a.key);
+							var itemB = Zotero.Items.getByLibraryAndKey(params.libraryID, b.key);
 							valA = itemA.getField('date', true, true);
 							valB = itemB.getField('date', true, true);
 						}
@@ -390,8 +392,8 @@ function ZoteroProtocolHandler() {
 						// slightly less broken. To do this right, real creator
 						// sorting needs to be abstracted from itemTreeView.js.
 						else if (sorts[index].field == 'firstCreator') {
-							var itemA = Zotero.Items.getByLibraryAndKey(a.libraryID, a.key);
-							var itemB = Zotero.Items.getByLibraryAndKey(b.libraryID, b.key);
+							var itemA = Zotero.Items.getByLibraryAndKey(params.libraryID, a.key);
+							var itemB = Zotero.Items.getByLibraryAndKey(params.libraryID, b.key);
 							valA = itemA.getField('firstCreator');
 							valB = itemB.getField('firstCreator');
 						}
@@ -522,7 +524,7 @@ function ZoteroProtocolHandler() {
 					params.scopeObject = 'collections';
 					var lkh = Zotero.Collections.parseLibraryKeyHash(params.id);
 					if (lkh) {
-						params.libraryID = lkh.libraryID;
+						params.libraryID = lkh.libraryID || userLibraryID;
 						params.scopeObjectKey = lkh.key;
 					}
 					else {
@@ -535,7 +537,7 @@ function ZoteroProtocolHandler() {
 					params.scopeObject = 'searches';
 					var lkh = Zotero.Searches.parseLibraryKeyHash(params.id);
 					if (lkh) {
-						params.libraryID = lkh.libraryID;
+						params.libraryID = lkh.libraryID || userLibraryID;
 						params.scopeObjectKey = lkh.key;
 					}
 					else {
@@ -596,7 +598,7 @@ function ZoteroProtocolHandler() {
 						var search = new Zotero.Search();
 						search.setScope(s);
 						var groups = Zotero.Groups.getAll();
-						for each(var group in groups) {
+						for (let group of groups) {
 							search.addCondition('libraryID', 'isNot', group.libraryID);
 						}
 						break;
@@ -664,9 +666,6 @@ function ZoteroProtocolHandler() {
 					var dateParts=timelineDate.toString().split(' ');
 					timelineDate=dateParts[1]+'.'+dateParts[2]+'.'+dateParts[3];
 				}
-				Zotero.debug('=');
-				Zotero.debug(params.i);
-				Zotero.debug(intervals);
 				if (!intervals || intervals.length < 3) {
 					intervals += "mye".substr(intervals.length);
 				}
@@ -794,73 +793,132 @@ function ZoteroProtocolHandler() {
 	 * zotero://select/[type]/1234 (not consistent across synced machines)
 	 */
 	var SelectExtension = {
-		newChannel: function (uri) {
-			return new AsyncChannel(uri, function* () {
-				var userLibraryID = Zotero.Libraries.userLibraryID;
-				
-				var path = uri.path;
-				if (!path) {
-					return 'Invalid URL';
+		noContent: true,
+		
+		doAction: Zotero.Promise.coroutine(function* (uri) {
+			var userLibraryID = Zotero.Libraries.userLibraryID;
+			
+			var path = uri.path;
+			if (!path) {
+				return 'Invalid URL';
+			}
+			// Strip leading '/'
+			path = path.substr(1);
+			var mimeType, content = '';
+			
+			var params = {
+				objectType: 'item'
+			};
+			var router = new Zotero.Router(params);
+			
+			// Item within a collection or search
+			router.add('library/:scopeObject/:scopeObjectKey/items/:objectKey', function () {
+				params.libraryID = userLibraryID;
+			});
+			router.add('groups/:groupID/:scopeObject/:scopeObjectKey/items/:objectKey');
+			
+			// All items
+			router.add('library/items/:objectKey', function () {
+				params.libraryID = userLibraryID;
+			});
+			router.add('groups/:groupID/items/:objectKey');
+			
+			// Old-style URLs
+			router.add('items/:id', function () {
+				var lkh = Zotero.Items.parseLibraryKeyHash(params.id);
+				if (lkh) {
+					params.libraryID = lkh.libraryID || userLibraryID;
+					params.objectKey = lkh.key;
 				}
-				// Strip leading '/'
-				path = path.substr(1);
-				var mimeType, content = '';
-				
-				var params = {
-					objectType: 'item'
-				};
-				var router = new Zotero.Router(params);
-				
-				// Item within a collection or search
-				router.add('library/:scopeObject/:scopeObjectKey/items/:objectKey', function () {
-					params.libraryID = userLibraryID;
-				});
-				router.add('groups/:groupID/:scopeObject/:scopeObjectKey/items/:objectKey');
-				
-				// All items
-				router.add('library/items/:objectKey', function () {
-					params.libraryID = userLibraryID;
-				});
-				router.add('groups/:groupID/items/:objectKey');
-				
-				// Old-style URLs
-				router.add('item/:id', function () {
-					var lkh = Zotero.Items.parseLibraryKeyHash(params.id);
-					if (lkh) {
-						params.libraryID = lkh.libraryID;
-						params.objectKey = lkh.key;
+				else {
+					params.objectID = params.id;
+				}
+				delete params.id;
+			});
+			
+			// Collection
+			router.add('library/collections/:objectKey', function () {
+				params.objectType = 'collection'
+				params.libraryID = userLibraryID;
+			});
+			router.add('groups/:groupID/collections/:objectKey', function () {
+				params.objectType = 'collection'
+			});
+			// Search
+			router.add('library/searches/:objectKey', function () {
+				params.objectType = 'search'
+				params.libraryID = userLibraryID;
+			});
+			router.add('groups/:groupID/searches/:objectKey', function () {
+				params.objectType = 'search'
+			});
+			
+			router.run(path);
+			
+			Zotero.API.parseParams(params);
+			
+			if (!params.objectKey && !params.objectID && !params.itemKey) {
+				Zotero.debug("No objects specified");
+				return;
+			}
+			
+			var results = yield Zotero.API.getResultsFromParams(params);
+			
+			if (!results.length) {
+				var msg = "Objects not found";
+				Zotero.debug(msg, 2);
+				Components.utils.reportError(msg);
+				return;
+			}
+			
+			var zp = Zotero.getActiveZoteroPane();
+			if (!zp) {
+				// TEMP
+				throw new Error("Pane not open");
+			}
+			
+			if (params.objectType == 'collection') {
+				return zp.collectionsView.selectCollection(results[0].id);
+			}
+			else if (params.objectType == 'search') {
+				return zp.collectionsView.selectSearch(results[0].id);
+			}
+			else {
+				// Select collection first if specified
+				if (params.scopeObject == 'collections') {
+					let col;
+					if (params.scopeObjectKey) {
+						col = Zotero.Collections.getByLibraryAndKey(
+							params.libraryID, params.scopeObjectKey
+						);
 					}
 					else {
-						params.objectID = params.id;
+						col = Zotero.Collections.get(params.scopeObjectID);
 					}
-					delete params.id;
-				});
-				router.run(path);
-				
-				try {
-					Zotero.API.parseParams(params);
-					var results = yield Zotero.API.getResultsFromParams(params);
+					yield zp.collectionsView.selectCollection(col.id);
 				}
-				catch (e) {
-					Zotero.debug(e, 1);
-					return e.toString();
+				else if (params.scopeObject == 'searches') {
+					let s;
+					if (params.scopeObjectKey) {
+						s = Zotero.Searches.getByLibraryAndKey(
+							params.libraryID, params.scopeObjectKey
+						);
+					}
+					else {
+						s = Zotero.Searches.get(params.scopeObjectID);
+					}
+					yield zp.collectionsView.selectSearch(s.id);
 				}
-				
-				
-				if (!results.length) {
-					var msg = "Selected items not found";
-					Zotero.debug(msg, 2);
-					Components.utils.reportError(msg);
-					return;
+				// If collection not specified, select library root
+				else {
+					yield zp.collectionsView.selectLibrary(params.libraryID);
 				}
-				
-				var wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
-					.getService(Components.interfaces.nsIWindowMediator);
-				var win = wm.getMostRecentWindow("navigator:browser");
-				
-				// TODO: Currently only able to select one item
-				yield win.ZoteroPane.selectItem(results[0].id);
-			});
+				return zp.selectItems(results.map(x => x.id));
+			}
+		}),
+		
+		newChannel: function (uri) {
+			this.doAction(uri);
 		}
 	};
 	
@@ -1004,6 +1062,119 @@ function ZoteroProtocolHandler() {
 		}
 	};
 	
+	
+	/**
+	 * Open a PDF at a given page (or try to)
+	 *
+	 * zotero://open-pdf/library/items/[itemKey]?page=[page]
+	 * zotero://open-pdf/groups/[groupID]/items/[itemKey]?page=[page]
+	 *
+	 * Also supports ZotFile format:
+	 * zotero://open-pdf/[libraryID]_[key]/[page]
+	 */
+	var OpenPDFExtension = {
+		noContent: true,
+		
+		doAction: async function (uri) {
+			var userLibraryID = Zotero.Libraries.userLibraryID;
+			
+			var uriPath = uri.path;
+			if (!uriPath) {
+				return 'Invalid URL';
+			}
+			// Strip leading '/'
+			uriPath = uriPath.substr(1);
+			var mimeType, content = '';
+			
+			var params = {
+				objectType: 'item'
+			};
+			var router = new Zotero.Router(params);
+			
+			// All items
+			router.add('library/items/:objectKey', function () {
+				params.libraryID = userLibraryID;
+			});
+			router.add('groups/:groupID/items/:objectKey');
+			
+			// ZotFile URLs
+			router.add(':id/:page', function () {
+				var lkh = Zotero.Items.parseLibraryKeyHash(params.id);
+				if (!lkh) {
+					Zotero.warn(`Invalid URL ${url}`);
+					return;
+				}
+				params.libraryID = lkh.libraryID || userLibraryID;
+				params.objectKey = lkh.key;
+				delete params.id;
+			});
+			router.run(uriPath);
+			
+			Zotero.API.parseParams(params);
+			var results = await Zotero.API.getResultsFromParams(params);
+			var page = params.page;
+			if (parseInt(page) != page) {
+				page = null;
+			}
+			
+			if (!results.length) {
+				Zotero.warn(`No item found for ${uriPath}`);
+				return;
+			}
+			
+			var item = results[0];
+			
+			if (!item.isFileAttachment()) {
+				Zotero.warn(`Item for ${uriPath} is not a file attachment`);
+				return;
+			}
+			
+			var path = await item.getFilePathAsync();
+			if (!path) {
+				Zotero.warn(`${path} not found`);
+				return;
+			}
+			
+			if (!path.toLowerCase().endsWith('.pdf')
+					&& Zotero.MIME.sniffForMIMEType(await Zotero.File.getSample(path)) != 'application/pdf') {
+				Zotero.warn(`${path} is not a PDF`);
+				return;
+			}
+			
+			// If no page number, just open normally
+			if (!page) {
+				let zp = Zotero.getActiveZoteroPane();
+				// TODO: Open pane if closed (macOS)
+				if (zp) {
+					zp.viewAttachment([item.id]);
+				}
+				return;
+			}
+			
+			try {
+				var opened = Zotero.OpenPDF.openToPage(path, page);
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+			// If something went wrong, just open PDF without page
+			if (!opened) {
+				let zp = Zotero.getActiveZoteroPane();
+				// TODO: Open pane if closed (macOS)
+				if (zp) {
+					zp.viewAttachment([item.id]);
+				}
+				return;
+			}
+			Zotero.Notifier.trigger('open', 'file', item.id);
+		},
+		
+		
+		newChannel: function (uri) {
+			this.doAction(uri);
+		}
+	};
+	
 	this._extensions[ZOTERO_SCHEME + "://data"] = DataExtension;
 	this._extensions[ZOTERO_SCHEME + "://report"] = ReportExtension;
 	this._extensions[ZOTERO_SCHEME + "://timeline"] = TimelineExtension;
@@ -1012,6 +1183,7 @@ function ZoteroProtocolHandler() {
 	this._extensions[ZOTERO_SCHEME + "://fullscreen"] = FullscreenExtension;
 	this._extensions[ZOTERO_SCHEME + "://debug"] = DebugExtension;
 	this._extensions[ZOTERO_SCHEME + "://connector"] = ConnectorExtension;
+	this._extensions[ZOTERO_SCHEME + "://open-pdf"] = OpenPDFExtension;
 }
 
 
@@ -1037,6 +1209,22 @@ ZoteroProtocolHandler.prototype = {
 		return false;
 	},
 	
+	getExtension: function (uri) {
+		let uriString = uri;
+		if (uri instanceof Components.interfaces.nsIURI) {
+			uriString = uri.spec;
+		}
+		uriString = uriString.toLowerCase();
+		
+		for (let extSpec in this._extensions) {
+			if (uriString.startsWith(extSpec)) {
+				return this._extensions[extSpec];
+			}
+		}
+		
+		return false;
+	},
+				
 	newURI : function(spec, charset, baseURI) {
 		var newURL = Components.classes["@mozilla.org/network/standard-url;1"]
 			.createInstance(Components.interfaces.nsIStandardURL);
@@ -1054,53 +1242,49 @@ ZoteroProtocolHandler.prototype = {
 		var newChannel = null;
 		
 		try {
-			var uriString = uri.spec.toLowerCase();
+			let ext = this.getExtension(uri);
 			
-			for (var extSpec in this._extensions) {
-				var ext = this._extensions[extSpec];
-				
-				if (uriString.indexOf(extSpec) == 0) {
-					if (!this._principal) {
-						if (ext.loadAsChrome) {
-							var chromeURI = chromeService.newURI(DUMMY_CHROME_URL, null, null);
-							var chromeChannel = chromeService.newChannel(chromeURI);
-							
-							// Cache System Principal from chrome request
-							// so proxied pages load with chrome privileges
-							this._principal = chromeChannel.owner;
-							
-							var chromeRequest = chromeChannel.QueryInterface(Components.interfaces.nsIRequest);
-							chromeRequest.cancel(0x804b0002); // BINDING_ABORTED
-						}
-					}
+			if (!ext) {
+				// Return cancelled channel for unknown paths
+				//
+				// These can be in the form zotero://example.com/... -- maybe for "//example.com" URLs?
+				var chromeURI = chromeService.newURI(DUMMY_CHROME_URL, null, null);
+				var extChannel = chromeService.newChannel(chromeURI);
+				var chromeRequest = extChannel.QueryInterface(Components.interfaces.nsIRequest);
+				chromeRequest.cancel(0x804b0002); // BINDING_ABORTED
+				return extChannel;
+			}
+			
+			if (!this._principal) {
+				if (ext.loadAsChrome) {
+					var chromeURI = chromeService.newURI(DUMMY_CHROME_URL, null, null);
+					var chromeChannel = chromeService.newChannel(chromeURI);
 					
-					var extChannel = ext.newChannel(uri);
-					// Extension returned null, so cancel request
-					if (!extChannel) {
-						var chromeURI = chromeService.newURI(DUMMY_CHROME_URL, null, null);
-						var extChannel = chromeService.newChannel(chromeURI);
-						var chromeRequest = extChannel.QueryInterface(Components.interfaces.nsIRequest);
-						chromeRequest.cancel(0x804b0002); // BINDING_ABORTED
-					}
+					// Cache System Principal from chrome request
+					// so proxied pages load with chrome privileges
+					this._principal = chromeChannel.owner;
 					
-					// Apply cached principal to extension channel
-					if (this._principal) {
-						extChannel.owner = this._principal;
-					}
-					
-					if(!extChannel.originalURI) extChannel.originalURI = uri;
-					
-					return extChannel;
+					var chromeRequest = chromeChannel.QueryInterface(Components.interfaces.nsIRequest);
+					chromeRequest.cancel(0x804b0002); // BINDING_ABORTED
 				}
 			}
 			
-			// Return cancelled channel for unknown paths
-			//
-			// These can be in the form zotero://example.com/... -- maybe for "//example.com" URLs?
-			var chromeURI = chromeService.newURI(DUMMY_CHROME_URL, null, null);
-			var extChannel = chromeService.newChannel(chromeURI);
-			var chromeRequest = extChannel.QueryInterface(Components.interfaces.nsIRequest);
-			chromeRequest.cancel(0x804b0002); // BINDING_ABORTED
+			var extChannel = ext.newChannel(uri);
+			// Extension returned null, so cancel request
+			if (!extChannel) {
+				var chromeURI = chromeService.newURI(DUMMY_CHROME_URL, null, null);
+				var extChannel = chromeService.newChannel(chromeURI);
+				var chromeRequest = extChannel.QueryInterface(Components.interfaces.nsIRequest);
+				chromeRequest.cancel(0x804b0002); // BINDING_ABORTED
+			}
+			
+			// Apply cached principal to extension channel
+			if (this._principal) {
+				extChannel.owner = this._principal;
+			}
+			
+			if(!extChannel.originalURI) extChannel.originalURI = uri;
+			
 			return extChannel;
 		}
 		catch (e) {
@@ -1204,7 +1388,7 @@ AsyncChannel.prototype = {
 					.createInstance(Components.interfaces.nsIScriptableUnicodeConverter);
 				converter.charset = "UTF-8";
 				let inputStream = converter.convertToInputStream(data);
-				listenerWrapper.onDataAvailable(this, context, inputStream, 0, data.length);
+				listenerWrapper.onDataAvailable(this, context, inputStream, 0, inputStream.available());
 				
 				listenerWrapper.onStopRequest(this, context, this.status);
 			}

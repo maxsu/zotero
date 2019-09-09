@@ -71,8 +71,8 @@ ZoteroAutoComplete.prototype.startSearch = Zotero.Promise.coroutine(function* (s
 			break;
 		
 		case 'tag':
-			var sql = "SELECT DISTINCT name AS val, NULL AS comment FROM tags WHERE name LIKE ?";
-			var sqlParams = [searchString + '%'];
+			var sql = "SELECT DISTINCT name AS val, NULL AS comment FROM tags WHERE name LIKE ? ESCAPE '\\'";
+			var sqlParams = [Zotero.DB.escapeSQLExpression(searchString) + '%'];
 			if (searchParams.libraryID !== undefined) {
 				sql += " AND tagID IN (SELECT tagID FROM itemTags JOIN items USING (itemID) "
 					+ "WHERE libraryID=?)";
@@ -231,10 +231,10 @@ ZoteroAutoComplete.prototype.startSearch = Zotero.Promise.coroutine(function* (s
 		if (resultsCallback) {
 			resultsCallback(results);
 			this.updateResults(
-				[for (x of results) x.val],
-				[for (x of results) x.comment],
+				Object.values(results).map(x => x.val),
+				Object.values(results).map(x => x.comment),
 				false
-			)
+			);
 		}
 		resultCode = null;
 		Zotero.debug("Autocomplete query completed");

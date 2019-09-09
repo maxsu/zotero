@@ -16,13 +16,13 @@ Zotero.Cite = {
 	 * Remove specified item IDs in-place from a citeproc-js bibliography object returned
 	 * by makeBibliography()
 	 * @param {bib} citeproc-js bibliography object
-	 * @param {Array} itemsToRemove Array of items to remove
+	 * @param {Set} itemsToRemove Set of items to remove
 	 */
 	"removeFromBibliography":function(bib, itemsToRemove) {
 		var removeItems = [];
 		for(let i in bib[0].entry_ids) {
 			for(let j in bib[0].entry_ids[i]) {
-				if(itemsToRemove[bib[0].entry_ids[i][j]]) {
+				if(itemsToRemove.has(`${bib[0].entry_ids[i][j]}`)) {
 					removeItems.push(i);
 					break;
 				}
@@ -113,7 +113,7 @@ Zotero.Cite = {
 				output.push("}");
 				return output.join("");
 			} else {
-				throw "Unimplemented bibliography format "+format;
+				throw new Error("Unimplemented bibliography format "+format);
 			}
 		} else {
 			if(format == "html") {
@@ -143,7 +143,7 @@ Zotero.Cite = {
 				output.push(bib[1][i]);
 				
 				// add COinS
-				for each(var itemID in bib[0].entry_ids[i]) {
+				for (let itemID of bib[0].entry_ids[i]) {
 					try {
 						var co = Zotero.OpenURL.createContextObject(Zotero.Items.get(itemID), "1.0");
 						if(!co) continue;
@@ -172,13 +172,13 @@ Zotero.Cite = {
 			var maxOffset = parseInt(bib[0].maxoffset);
 			var entrySpacing = parseInt(bib[0].entryspacing);
 			var lineSpacing = parseInt(bib[0].linespacing);
-			var hangingIndent = parseInt(bib[0].hangingindent);
+			var hangingIndent = bib[0].hangingindent;
 			var secondFieldAlign = bib[0]["second-field-align"];
 			
 			// Validate input
-			if(maxOffset == NaN) throw "Invalid maxoffset";
-			if(entrySpacing == NaN) throw "Invalid entryspacing";
-			if(lineSpacing == NaN) throw "Invalid linespacing";
+			if(maxOffset == NaN) throw new Error("Invalid maxoffset");
+			if(entrySpacing == NaN) throw new Error("Invalid entryspacing");
+			if(lineSpacing == NaN) throw new Error("Invalid linespacing");
 			
 			var str;
 			var parser = Components.classes["@mozilla.org/xmlextras/domparser;1"]
@@ -206,7 +206,7 @@ Zotero.Cite = {
 				}
 				// If only one field, apply hanging indent on root
 				else if (!multiField) {
-					style += "padding-left: " + hangingIndent + "em; text-indent:-" + hangingIndent + "em;";
+					style += "margin-left: 2em; text-indent:-2em;";
 				}
 			}
 			
@@ -259,7 +259,7 @@ Zotero.Cite = {
 				divStyle = "margin: 0 .4em 0 " + (secondFieldAlign ? maxOffset + rightPadding : "0") + "em;";
 				
 				if (hangingIndent) {
-					divStyle += "padding-left: " + hangingIndent + "em; text-indent:-" + hangingIndent + "em;";
+					divStyle += "padding-left: 2em; text-indent:-2em;";
 				}
 				
 				div.setAttribute("style", divStyle);
@@ -283,7 +283,7 @@ Zotero.Cite = {
 			
 			return bib[0].bibstart+preamble+bib[1].join("\\\r\n")+"\\\r\n"+bib[0].bibend;
 		} else {
-			throw "Unimplemented bibliography format "+format;
+			throw new Error("Unimplemented bibliography format "+format);
 		}
 	},
 
@@ -302,7 +302,7 @@ Zotero.Cite = {
 			var sessionID = id.substr(0, slashIndex),
 				session = Zotero.Integration.sessions[sessionID],
 				item;
-			if(session) {
+			if (session) {
 				item = session.embeddedZoteroItems[id.substr(slashIndex+1)];
 			}
 			
@@ -315,6 +315,104 @@ Zotero.Cite = {
 		} else {
 			return Zotero.Items.get(id);
 		}
+	},
+	
+	extraToCSL: function (extra) {
+		return extra.replace(/^([A-Za-z \-]+)(:\s*.+)/gm, function (_, field, value) {
+			var originalField = field;
+			var field = field.toLowerCase().replace(/ /g, '-');
+			// Fields from https://aurimasv.github.io/z2csl/typeMap.xml
+			switch (field) {
+			// Standard fields
+			case 'abstract':
+			case 'accessed':
+			case 'annote':
+			case 'archive':
+			case 'archive-place':
+			case 'author':
+			case 'authority':
+			case 'call-number':
+			case 'chapter-number':
+			case 'citation-label':
+			case 'citation-number':
+			case 'collection-editor':
+			case 'collection-number':
+			case 'collection-title':
+			case 'composer':
+			case 'container':
+			case 'container-author':
+			case 'container-title':
+			case 'container-title-short':
+			case 'dimensions':
+			case 'director':
+			case 'edition':
+			case 'editor':
+			case 'editorial-director':
+			case 'event':
+			case 'event-date':
+			case 'event-place':
+			case 'first-reference-note-number':
+			case 'genre':
+			case 'illustrator':
+			case 'interviewer':
+			case 'issue':
+			case 'issued':
+			case 'jurisdiction':
+			case 'keyword':
+			case 'language':
+			case 'locator':
+			case 'medium':
+			case 'note':
+			case 'number':
+			case 'number-of-pages':
+			case 'number-of-volumes':
+			case 'original-author':
+			case 'original-date':
+			case 'original-publisher':
+			case 'original-publisher-place':
+			case 'original-title':
+			case 'page':
+			case 'page-first':
+			case 'publisher':
+			case 'publisher-place':
+			case 'recipient':
+			case 'references':
+			case 'reviewed-author':
+			case 'reviewed-title':
+			case 'scale':
+			case 'section':
+			case 'source':
+			case 'status':
+			case 'submitted':
+			case 'title':
+			case 'title-short':
+			case 'translator':
+			case 'version':
+			case 'volume':
+			case 'year-suffix':
+				break;
+			
+			// Uppercase fields
+			case 'doi':
+			case 'isbn':
+			case 'issn':
+			case 'pmcid':
+			case 'pmid':
+			case 'url':
+				field = field.toUpperCase();
+				break;
+			
+			// Weirdo
+			case 'archive-location':
+				field = 'archive_location';
+				break;
+			
+			// Don't change other lines
+			default:
+				field = originalField;
+			}
+			return field + value;
+		});
 	}
 };
 
@@ -333,7 +431,7 @@ Zotero.Cite.getAbbreviation = new function() {
 	}
 
 	function loadAbbreviations() {
-		var file = Zotero.getZoteroDirectory();
+		var file = Zotero.File.pathToFile(Zotero.DataDirectory.dir);
 		file.append("abbreviations.json");
 
 		var json, origin;
@@ -486,19 +584,26 @@ Zotero.Cite.getAbbreviation = new function() {
 
 /**
  * citeproc-js system object
+ *
  * @class
+ * @param {Object} options
+ * @param {Boolean} [options.automaticJournalAbbreviations]
+ * @param {Boolean} [options.uppercaseSubtitles]
  */
-Zotero.Cite.System = function(automaticJournalAbbreviations) {
-	if(automaticJournalAbbreviations) {
+Zotero.Cite.System = function ({ automaticJournalAbbreviations, uppercaseSubtitles }) {
+	if (automaticJournalAbbreviations) {
 		this.getAbbreviation = Zotero.Cite.getAbbreviation;
 	}
-}
+	if (uppercaseSubtitles) {
+		this.uppercase_subtitles = true; // eslint-disable-line camelcase
+	}
+};
 
 Zotero.Cite.System.prototype = {
 	/**
 	 * citeproc-js system function for getting items
 	 * See http://gsl-nagoya-u.net/http/pub/citeproc-doc.html#retrieveitem
-	 * @param {String|Integer} Item ID, or string item for embedded citations
+	 * @param {String|Integer} item - Item ID, or string item for embedded citations
 	 * @return {Object} citeproc-js item
 	 */
 	"retrieveItem":function retrieveItem(item) {
@@ -509,10 +614,10 @@ Zotero.Cite.System.prototype = {
 		} else if(typeof item === "string" && (slashIndex = item.indexOf("/")) !== -1) {
 			// is an embedded item
 			var sessionID = item.substr(0, slashIndex);
-			var session = Zotero.Integration.sessions[sessionID]
+			var session = Zotero.Integration.sessions[sessionID];
 			if(session) {
 				var embeddedCitation = session.embeddedItems[item.substr(slashIndex+1)];
-				if(embeddedCitation) {
+				if (embeddedCitation) {
 					embeddedCitation.id = item;
 					return embeddedCitation;
 				}
@@ -526,7 +631,7 @@ Zotero.Cite.System.prototype = {
 		}
 
 		if(!zoteroItem) {
-			throw "Zotero.Cite.System.retrieveItem called on non-item "+item;
+			throw new Error("Zotero.Cite.System.retrieveItem called on non-item "+item);
 		}
 		
 		var cslItem = Zotero.Utilities.itemToCSLJSON(zoteroItem);
@@ -556,21 +661,45 @@ Zotero.Cite.System.prototype = {
 	 * @return {String|Boolean} The locale as a string if it exists, or false if it doesn't
 	 */
 	"retrieveLocale":function retrieveLocale(lang) {
-		var protHandler = Components.classes["@mozilla.org/network/protocol;1?name=chrome"]
-			.createInstance(Components.interfaces.nsIProtocolHandler);
-		try {
-			var channel = protHandler.newChannel(protHandler.newURI("chrome://zotero/content/locale/csl/locales-"+lang+".xml", "UTF-8", null));
-			var rawStream = channel.open();
-		} catch(e) {
-			return false;
-		}
-		var converterStream = Components.classes["@mozilla.org/intl/converter-input-stream;1"]
-							   .createInstance(Components.interfaces.nsIConverterInputStream);
-		converterStream.init(rawStream, "UTF-8", 65535,
-			Components.interfaces.nsIConverterInputStream.DEFAULT_REPLACEMENT_CHARACTER);
-		var str = {};
-		converterStream.readString(channel.contentLength, str);
-		converterStream.close();
-		return str.value;
+		return Zotero.Cite.Locale.get(lang);
 	}
 };
+
+Zotero.Cite.Locale = {
+	_cache: new Map(),
+	
+	get: function (locale) {
+		var str = this._cache.get(locale);
+		if (str) {
+			return str;
+		}
+		var uri = `chrome://zotero/content/locale/csl/locales-${locale}.xml`;
+		try {
+			let protHandler = Components.classes["@mozilla.org/network/protocol;1?name=chrome"]
+				.createInstance(Components.interfaces.nsIProtocolHandler);
+			let channel = protHandler.newChannel(protHandler.newURI(uri));
+			let cstream = Components.classes["@mozilla.org/intl/converter-input-stream;1"]
+				.createInstance(Components.interfaces.nsIConverterInputStream);
+			cstream.init(channel.open(), "UTF-8", 0, 0);
+			let obj = {};
+			let read = 0;
+			let str = "";
+			do {
+				// Read as much as we can and put it in obj.value
+				read = cstream.readString(0xffffffff, obj);
+				str += obj.value;
+			} while (read != 0);
+			cstream.close();
+			this._cache.set(locale, str);
+			return str;
+		}
+		catch (e) {
+			//Zotero.debug(e);
+			return false;
+		}
+	}
+};
+
+if (typeof process === 'object' && process + '' === '[object process]'){
+    module.exports = Zotero.Cite;
+}

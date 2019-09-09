@@ -50,31 +50,40 @@
 				
 				this._iframe = document.getAnonymousElementByAttribute(this, "anonid", "rt-view");
 				
+				// Atomic units, HTML -> RTF (cleanup)
+				//[/<\/p>(?!\s*$)/g, "\\par{}"],
+				//[/ /g, "&nbsp;"],
+				//[/\u00A0/g, " "],
 				this._htmlRTFmap = [
-					// Atomic units, HTML -> RTF (cleanup)
 					[/<br \/>/g, "\x0B"],
+					[/<span class=\"tab\">&nbsp;<\/span>/g, "\\tab{}"],
+					[/&lsquo;/g, "‘"],
+					[/&rsquo;/g, "’"],
+					[/&ldquo;/g, "“"],
+					[/&rdquo;/g, "”"],
+					[/&nbsp;/g, "\u00A0"],
 					[/"(\w)/g, "“$1"],
 					[/([\w,.?!])"/g, "$1”"],
 					[/<p>/g, ""],
-					//[/<\/p>(?!\s*$)/g, "\\par{}"],
-					[/<\/?div[^>]*>/g, ""],
-					[/[\x7F-\uFFFF]/g, function(aChar) { return "\\uc0\\u"+aChar.charCodeAt(0).toString()+"{}"}]
+					[/<\/?div[^>]*>/g, ""]
 				];
 				
+				// Atomic units, RTF -> HTML (cleanup)
 				this._rtfHTMLmap = [
-					// Atomic units, RTF -> HTML (cleanup)
 					[/\\uc0\{?\\u([0-9]+)\}?(?:{}| )?/g, function(wholeStr, aCode) { return String.fromCharCode(aCode) }],
 					[/\\tab(?:\{\}| )/g, '<span class="tab">&nbsp;</span>'],
 					[/(?:\\par{}|\\\r?\n)/g, "</p><p>"]
 				];
 				
-				this.init = function() {
-					if (this.initialized) return;
+				this.prepare = function() {
+					// DEBUG: Does this actually happen?
+					if (this.prepared) return;
+					
 					// Tag data
 					var _rexData = [
 						[
 							[
-								["<span style=\"font-variant:small-caps;\">"],
+								["<span +style=\"font-variant: *small-caps;\">"],
 								["{\\scaps ", "{\\scaps{}"]
 							],
 							[
@@ -84,7 +93,7 @@
 						],
 						[
 							[
-								["<span style=\"text-decoration:underline;\">"],
+								["<span +style=\"text-decoration: *underline;\">"],
 								["{\\ul{}", "{\\ul "]
 							],
 							[
@@ -154,7 +163,7 @@
 						],
 						[
 							[
-								["<span style=\"font-variant:normal;\">"],
+								["<span +style=\"font-variant: *normal;\">"],
 								["{\\scaps0{}", "{\\scaps0 "]
 							],
 							[
@@ -164,7 +173,7 @@
 						],
 						[
 							[
-								["<span style=\"font-style:normal;\">"],
+								["<span +style=\"font-style: *normal;\">"],
 								["{\\i0{}", "{\\i0 "]
 							],
 							[
@@ -174,7 +183,7 @@
 						],
 						[
 							[
-								["<span style=\"font-weight:normal;\">"],
+								["<span +style=\"font-weight: *normal;\">"],
 								["{\\b0{}", "{\\b0 "]
 							],
 							[
@@ -193,6 +202,16 @@
 							return 0;
 						}
 					}
+					
+					function normalizeRegExpString(str) {
+						if (!str) return str;
+						return str.replace(/\s+/g, " ")
+									.replace(/(?:[\+]|\s[\*])/g, "")
+									.replace(/[\']/g, '\"')
+									.replace(/:\s/g, ":");
+					}
+
+					this.normalizeRegExpString = normalizeRegExpString;
 					
 					function composeRex(rexes, noGlobal) {
 						var lst = [];
@@ -237,13 +256,15 @@
 					function openTagRemapMaker(segment) {
 						var ret = {};
 						for (var i=0,ilen=_rexData.length; i < ilen; i++) {
-							var master = _rexData[i][0][segment][0];
+							var primaryVal = normalizeRegExpString(_rexData[i][0][segment][0]);
 							for (var j=0,jlen=_rexData[i][0][segment].length; j < jlen; j++) {
-								ret[_rexData[i][0][segment][j]] = master;
+								var key = normalizeRegExpString(_rexData[i][0][segment][j]);
+								ret[key] = primaryVal;
 							}
 						}
 						return ret;
 					}
+
 					this.rtfHTMLopenTagRemap = openTagRemapMaker(1);
 					this.htmlRTFopenTagRemap = openTagRemapMaker(0);
 					
@@ -252,11 +273,11 @@
 						var ret = {};
 						var rexes = {};
 						for (var i=0,ilen=_rexData.length; i < ilen; i++) {
-							var master = _rexData[i][0][segment][0];
+							var primaryVal = _rexData[i][0][segment][0];
 							for (var j=0,jlen=_rexData[i][1][segment].length; j < jlen; j++) {
 								rexes[_rexData[i][1][segment][j]] = true;
 							}
-							ret[master] = composeRex(rexes);
+							ret[primaryVal] = composeRex(rexes);
 						}
 						return ret;
 					}
@@ -271,20 +292,21 @@
 						}
 						var ret = {};
 						for (var i=0,ilen=_rexData.length; i < ilen; i++) {
-							var master = _rexData[i][0][segment][0];
-							ret[master] = {
-								open: _rexData[i][0][antisegment][0],
+							var primaryVal = normalizeRegExpString(_rexData[i][0][segment][0]);
+							ret[primaryVal] = {
+								open: normalizeRegExpString(_rexData[i][0][antisegment][0]),
 								close: _rexData[i][1][antisegment][0]
 							}
 						}
 						return ret;
 					}
+					
 					this.rtfHTMLtagRegistry = tagRegistryMaker(1);
 					this.htmlRTFtagRegistry = tagRegistryMaker(0);
 
-                    this.initialized = true;
+                    this.prepared = true;
 				}
-				this.init();
+				this.prepare();
 				
 				this.getSplit = function(mode, txt) {
 					if (!txt) return [];
@@ -301,7 +323,7 @@
 				this.getOpenTag = function(mode, str) {
 					var m = str.match(this[mode + "openSniffRex"]);
 					if (m) {
-						m = this[mode + "openTagRemap"][m[0]];
+						m = this[mode + "openTagRemap"][this.normalizeRegExpString(m[0])];
 					}
 					return m;
 				}
@@ -336,14 +358,13 @@
 				}
 				
 				this.htmlToRTF = function(txt) {
-					// Catch this one before &nbsp; is clobbered by unescape
-					txt = txt.replace(/<span class=\"tab\">&nbsp;<\/span>/g, "\\tab{}");
-					txt = Zotero.Utilities.unescapeHTML(txt);
+					txt = this.convert("htmlRTF", txt);
 					for (var i=0,ilen=this._htmlRTFmap.length; i < ilen; i++) {
 						var entry = this._htmlRTFmap[i];
 						txt = txt.replace(entry[0], entry[1]);
 					}
-					txt = this.convert("htmlRTF", txt);
+					txt = Zotero.Utilities.unescapeHTML(txt);
+					txt = txt.replace(/[\x7F-\uFFFF]/g, function(aChar) { return "\\uc0\\u"+aChar.charCodeAt(0).toString()+"{}"});
 					return txt.trim();
 				}
 				
@@ -375,25 +396,25 @@
 					Zotero.debug("Setting mode to " + val);
 					switch (val) {
 						case 'note':
-							var self = this;
-							
 							this._eventHandler = function (event) {
 								// Necessary in Fx32+
 								if (event.wrappedJSObject) {
 									event = event.wrappedJSObject;
 								}
 								
-								//Zotero.debug(event.type);
+								var commandEvent = false;
+								
+								if (Zotero.Prefs.get('debugNoteEvents')) {
+									Zotero.debug(event.type);
+									Zotero.debug(event.which);
+								}
 								switch (event.type) {
 									case 'keydown':
-										// Intercept and manually trigger redo for Cmd-Shift-Z,
-										// which keeps it from toggling the Zotero pane instead
-										if (Zotero.isMac && event.metaKey && event.shiftKey && !event.ctrlKey
-												&& !event.altKey && event.keyCode == 90) {
-											event.stopPropagation();
-											event.preventDefault();
-											self.redo();
-											return;
+										// Handle forward-delete, which doesn't register as a keypress
+										// when a selection is cleared
+										if (event.which == event.DOM_VK_DELETE) {
+											this._changed = true;
+											commandEvent = true;
 										}
 										break;
 									
@@ -407,38 +428,45 @@
 											//Zotero.debug("Not a char");
 											return;
 										}
+										this._changed = true;
+										commandEvent = true;
 										break;
 									
+									// 'change' includes text added via drag-and-drop
 									case 'change':
+									case 'undo':
+									case 'redo':
+										this._changed = true;
+										commandEvent = true;
 										break;
-
-									case 'openlink':
-										var wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
-											.getService(Components.interfaces.nsIWindowMediator);
-										win = wm.getMostRecentWindow('navigator:browser');
-										win.ZoteroPane.loadURI(event.target.href, event.modifierKeys);
+									
+									case 'ZoteroLinkClick':
+										var zp = typeof ZoteroPane != 'undefined'
+											? ZoteroPane
+											: window.opener.ZoteroPane;
+										zp.loadURI(event.value);
 										break;
 									
 									default:
 										return;
 								}
 								
-								if (self._timer) {
-									clearTimeout(self._timer);
-								}
-								
-								// Trigger command event on change
-								if (event.type == 'keypress' || event.type == 'change') {
-									self._timer = self.timeout && setTimeout(function () {
-										var attr = self.getAttribute('oncommand');
+								// Trigger command on change
+								if (commandEvent && this.timeout) {
+									if (this._timer) {
+										clearTimeout(this._timer);
+									}
+									
+									this._timer = setTimeout(function () {
+										var attr = this.getAttribute('oncommand');
 										attr = attr.replace('this', 'thisObj');
 										var func = new Function('thisObj', 'event', attr);
-										func(self, event);
-									}, self.timeout);
+										func(this, event);
+									}.bind(this), this.timeout);
 								}
 								
 								return true;
-							};
+							}.bind(this);
 							break;
 						
 						case 'integration':
@@ -471,6 +499,10 @@
 			<!-- Sets or returns contents of rich text box -->
 			<property name="value">
 				<getter><![CDATA[
+					if (!this._editor) {
+						return null;
+					}
+					
 					var output = this._editor.getContent().trim();
 					
 					if(this._format == "RTF") {
@@ -504,6 +536,7 @@
 					
 					if (this.value == val) {
 						Zotero.debug("Textbox value hasn't changed");
+						this._changed = false;
 						return;
 					}
 					
@@ -550,7 +583,7 @@
 					onset="this.setAttribute('timeout', val); return val;"
 					onget="return parseInt(this.getAttribute('timeout')) || 0;"/>
 			
-			<property name="changed" onget="return this._changed;"/>
+			<property name="changed" onget="return this._changed;" onset="this._changed = !!val;"/>
 			
 			<method name="focus">
 				<body>
@@ -567,10 +600,10 @@
 				</body>
 			</method>
 			
-			<method name="redo">
+			<method name="hasFocus">
 				<body>
 				<![CDATA[
-					this._editor.undoManager.redo();
+					return this._editor ? this._editor.hasFocus() : false;
 				]]>
 				</body>
 			</method>
@@ -578,9 +611,27 @@
 			<method name="clearUndo">
 				<body>
 				<![CDATA[
-					this._editor.undoManager.clear();
+					if (this._editor) {
+						this._editor.undoManager.clear();
+						this._editor.undoManager.add();
+					}
 				]]>
 				</body>
+			</method>
+			
+			<method name="onInit">
+				<parameter name="callback"/>
+				<body><![CDATA[
+					if (this.initialized) {
+						callback(this._editor);
+					}
+					else {
+						if (!this._onInitCallbacks) {
+							this._onInitCallbacks = [];
+						}
+						this._onInitCallbacks.push(callback);
+					}
+				]]></body>
 			</method>
 			
 			<field name="_loaded"/>
@@ -597,8 +648,10 @@
 						getService(Components.interfaces.nsIIOService);
 					var uri = ios.newURI("resource://zotero/tinymce/" + htmlFile + ".html", null, null);
 					
-					// Pass directionality (LTR/RTL) in URL
-					uri.spec += "?dir=" + Zotero.dir;
+					// Pass directionality (LTR/RTL) and locale in URL
+					uri.spec += "?locale=" + encodeURIComponent(Zotero.locale)
+						+ "&dir=" + Zotero.dir;
+					
 					
 					Zotero.debug("Loading " + uri.spec);
 					
@@ -615,7 +668,7 @@
 							&& (!SJOW._zoteroMatchTo || SJOW._zoteroMatchTo !== matchTo)) return;
 						
 						if (!SJOW.tinyMCE) {
-							var exts = Zotero.getInstalledExtensions(function(exts) {
+							Zotero.getInstalledExtensions().then(function(exts) {
 								for (let ext of exts) {
 									if (ext.indexOf('NoScript') != -1 && ext.indexOf('disabled') == -1) {
 										var doc = win.document;
@@ -646,10 +699,16 @@
 								}
 								if (self._value) {
 									self.value = self._value;
+									
+									// Prevent undoing to empty note after initialization
+									self._editor.undoManager.clear();
+									self._editor.undoManager.add();
 								}
 								if (self._focus) {
-									self._iframe.focus();
-									self._editor.focus();
+									setTimeout(function () {
+										self._iframe.focus();
+										self._editor.focus();
+									});
 									self._focus = false;
 								}
 								
@@ -660,15 +719,15 @@
 									if (fontSize < 6) {
 										fontSize = 11;
 									}
-									var css = "body#zotero-tinymce-note.mceContentBody, "
-										+ "body#zotero-tinymce-note.mceContentBody p, "
-										+ "body#zotero-tinymce-note.mceContentBody th, "
-										+ "body#zotero-tinymce-note.mceContentBody td, "
-										+ "body#zotero-tinymce-note.mceContentBody pre { "
+									var css = "body#zotero-tinymce-note, "
+										+ "body#zotero-tinymce-note p, "
+										+ "body#zotero-tinymce-note th, "
+										+ "body#zotero-tinymce-note td, "
+										+ "body#zotero-tinymce-note pre { "
 											+ "font-size: " + fontSize + "px; "
 										+ "} "
-										+ "body#zotero-tinymce-note.mceContentBody, "
-										+ "body#zotero-tinymce-note.mceContentBody p { "
+										+ "body#zotero-tinymce-note, "
+										+ "body#zotero-tinymce-note p { "
 											+ "font-family: "
 											+ Zotero.Prefs.get('note.fontFamily') + "; "
 										+ "}"
@@ -681,11 +740,13 @@
 									head.appendChild(style);
 								}
 								
-								// Dispatch a tinymceInitialized event
-								var ev = document.createEvent('HTMLEvents');
-								ev.initEvent('tinymceInitialized', true, true);
-								self.dispatchEvent(ev);
-							};
+								let cb;
+								if (this._onInitCallbacks) {
+									while (cb = this._onInitCallbacks.shift()) {
+										cb(this._editor);
+									}
+								}
+							}.bind(this);
 						}
 						
 						var editor = SJOW.tinyMCE.get("tinymce");
@@ -701,11 +762,7 @@
 							return;
 						}
 						
-						if(window.ZoteroTab) {
-							ZoteroTab.containerWindow.gBrowser.removeEventListener("DOMContentLoaded", listener, true);
-						} else {
-							self._iframe.removeEventListener("DOMContentLoaded", listener, false);
-						}
+						self._iframe.removeEventListener("DOMContentLoaded", listener, false);
 						
 						if (self._eventHandler) {
 							win.wrappedJSObject.zoteroHandleEvent = self._eventHandler;
@@ -715,20 +772,9 @@
 						win.wrappedJSObject.zoteroExecCommand = function (doc, command, ui, value) {
 							return doc.execCommand(command, ui, value);
 						}
-						
-						win.wrappedJSObject.zoteroFixWindow = function (win) {
-							win.locationbar.visible = false;
-							win.statusbar.visible = false;
-						}
-					};
+					}.bind(this);
 					
-					if(window.ZoteroTab) {
-						// I'm not sure why it's necessary to attach the event listener to the 
-						// container window to get it to fire on the tab, but apparently it is...
-						ZoteroTab.containerBrowser.addEventListener("DOMContentLoaded", listener, true);
-					} else {
-						this._iframe.addEventListener("DOMContentLoaded", listener, false);
-					}
+					this._iframe.addEventListener("DOMContentLoaded", listener, false);
 					
 					this._iframe.webNavigation.loadURI(uri.spec,
 						Components.interfaces.nsIWebNavigation.LOAD_FLAGS_BYPASS_HISTORY, null, null, null);

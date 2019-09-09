@@ -12,7 +12,7 @@ describe("Zotero.Feed", function() {
 	describe("#constructor()", function() {
 		it("should accept required fields as arguments", function* () {
 			let feed = new Zotero.Feed();
-			yield assert.isRejected(feed.saveTx(), /^Error: Feed name not set$/);
+			yield assert.isRejected(feed.saveTx(), /^Feed name not set$/);
 			
 			feed = new Zotero.Feed({
 				name: 'Test ' + Zotero.randomString(),
@@ -50,6 +50,13 @@ describe("Zotero.Feed", function() {
 		});
 	});
 	
+	describe("#libraryTypeID", function () {
+		it("should be undefind", function* () {
+			let feed = yield createFeed();
+			assert.isUndefined(feed.libraryTypeID);
+		});
+	});
+	
 	describe("#url", function() {
 		it("should throw if trying to set an invalid URL", function *() {
 			let feed = new Zotero.Feed({ name: 'Test ' + Zotero.randomString() });
@@ -75,7 +82,8 @@ describe("Zotero.Feed", function() {
 				name: 'Test ' + Zotero.randomString(),
 				url: 'http://' + Zotero.randomString() + '.com/',
 				refreshInterval: 30,
-				cleanupAfter: 1
+				cleanupReadAfter: 1,
+				cleanupUnreadAfter: 30
 			};
 			
 			let feed = yield createFeed(props);
@@ -83,7 +91,8 @@ describe("Zotero.Feed", function() {
 			assert.equal(feed.name, props.name, "name is correct");
 			assert.equal(feed.url.toLowerCase(), props.url.toLowerCase(), "url is correct");
 			assert.equal(feed.refreshInterval, props.refreshInterval, "refreshInterval is correct");
-			assert.equal(feed.cleanupAfter, props.cleanupAfter, "cleanupAfter is correct");
+			assert.equal(feed.cleanupReadAfter, props.cleanupReadAfter, "cleanupReadAfter is correct");
+			assert.equal(feed.cleanupUnreadAfter, props.cleanupUnreadAfter, "cleanupUnreadAfter is correct");
 			
 			assert.isNull(feed.lastCheck, "lastCheck is null");
 			assert.isNull(feed.lastUpdate, "lastUpdate is null");
@@ -91,28 +100,28 @@ describe("Zotero.Feed", function() {
 		});
 		it("should throw if name or url are missing", function *() {
 			let feed = new Zotero.Feed();
-			yield assert.isRejected(feed.saveTx(), /^Error: Feed name not set$/);
+			yield assert.isRejected(feed.saveTx(), /^Feed name not set$/);
 			
 			feed.name = 'Test ' + Zotero.randomString();
-			yield assert.isRejected(feed.saveTx(), /^Error: Feed URL not set$/);
+			yield assert.isRejected(feed.saveTx(), /^Feed URL not set$/);
 			
 			feed = new Zotero.Feed();
 			feed.url = 'http://' + Zotero.randomString() + '.com';
-			yield assert.isRejected(feed.saveTx(), /^Error: Feed name not set$/);
+			yield assert.isRejected(feed.saveTx(), /^Feed name not set$/);
 		});
 		it("should not allow saving a feed with the same url", function *() {
 			let url = 'http://' + Zotero.randomString() + '.com';
 			let feed1 = yield createFeed({ url });
 			
 			let feed2 = new Zotero.Feed({ name: 'Test ' + Zotero.randomString(), url });
-			yield assert.isRejected(feed2.saveTx(), /^Error: Feed for URL already exists: /);
+			yield assert.isRejected(feed2.saveTx(), /^Feed for URL already exists: /);
 			
 			// Perform check with normalized URL
 			feed2.url = url + '/';
-			yield assert.isRejected(feed2.saveTx(), /^Error: Feed for URL already exists: /);
+			yield assert.isRejected(feed2.saveTx(), /^Feed for URL already exists: /);
 			
 			feed2.url = url.toUpperCase();
-			yield assert.isRejected(feed2.saveTx(), /^Error: Feed for URL already exists: /);
+			yield assert.isRejected(feed2.saveTx(), /^Feed for URL already exists: /);
 		});
 		it("should allow saving a feed with the same name", function *() {
 			let name = 'Test ' + Zotero.randomString();
@@ -159,7 +168,7 @@ describe("Zotero.Feed", function() {
 			assert.notOk(syncedFeeds[oldUrl]);
 			assert.ok(syncedFeeds[feed.url]);
 		});
-		it('should update syncedSettings if `name`, `url`, `refreshInterval` or `cleanupAfter` was modified', function* () {
+		it('should update syncedSettings if `name`, `url`, `refreshInterval` or `cleanupUnreadAfter` was modified', function* () {
 			let feed = yield createFeed();
 			let syncedSetting = Zotero.SyncedSettings.get(Zotero.Libraries.userLibraryID, 'feeds');
 			yield Zotero.SyncedSettings.set(Zotero.Libraries.userLibraryID, 'feeds', syncedSetting, 0, true);
@@ -168,7 +177,7 @@ describe("Zotero.Feed", function() {
 			yield feed.saveTx();
 			assert.isFalse(Zotero.SyncedSettings.getMetadata(Zotero.Libraries.userLibraryID, 'feeds').synced)
 		});
-		it('should not update syncedSettings if `name`, `url`, `refreshInterval` or `cleanupAfter` were not modified', function* () {
+		it('should not update syncedSettings if `name`, `url`, `refreshInterval` or `cleanupUnreadAfter` were not modified', function* () {
 			let feed = yield createFeed();
 			let syncedSetting = Zotero.SyncedSettings.get(Zotero.Libraries.userLibraryID, 'feeds');
 			yield Zotero.SyncedSettings.set(Zotero.Libraries.userLibraryID, 'feeds', syncedSetting, 0, true);
@@ -220,12 +229,13 @@ describe("Zotero.Feed", function() {
 	describe("#storeSyncedSettings", function() {
 		it("should store settings for feed in compact format", function* () {
 			let url = 'http://' + Zotero.Utilities.randomString().toLowerCase() + '.com/feed.rss';
-			let settings = [Zotero.Utilities.randomString(), 1, 1];
+			let settings = [Zotero.Utilities.randomString(), 1, 30, 1];
 			let feed = yield createFeed({
 				url,
 				name: settings[0],
-				cleanupAfter: settings[1],
-				refreshInterval: settings[2]
+				cleanupReadAfter: settings[1],
+				cleanupUnreadAfter: settings[2],
+				refreshInterval: settings[3]
 			});
 			
 			let syncedFeeds = Zotero.SyncedSettings.get(Zotero.Libraries.userLibraryID, 'feeds');
@@ -234,17 +244,25 @@ describe("Zotero.Feed", function() {
 	});
 	
 	describe("#clearExpiredItems()", function() {
-		var feed, expiredFeedItem, readFeedItem, feedItem, readStillInFeed, feedItemIDs;
+		var feed, readExpiredFI, unreadExpiredFI, readFeedItem, feedItem, readStillInFeed, feedItemIDs;
 		
 		before(function* (){
-			feed = yield createFeed({cleanupAfter: 1});
+			feed = yield createFeed({cleanupReadAfter: 1, cleanupUnreadAfter: 3});
 			
-			expiredFeedItem = yield createDataObject('feedItem', { libraryID: feed.libraryID });
+			readExpiredFI = yield createDataObject('feedItem', { libraryID: feed.libraryID });
 			// Read 2 days ago
-			expiredFeedItem.isRead = true;
-			expiredFeedItem._feedItemReadTime = Zotero.Date.dateToSQL(
+			readExpiredFI.isRead = true;
+			readExpiredFI._feedItemReadTime = Zotero.Date.dateToSQL(
 					new Date(Date.now() - 2 * 24*60*60*1000), true);
-			yield expiredFeedItem.saveTx();
+			yield readExpiredFI.saveTx();
+
+			// Added 5 days ago
+			unreadExpiredFI = yield createDataObject('feedItem', { 
+				libraryID: feed.libraryID,
+				dateAdded: Zotero.Date.dateToSQL(new Date(Date.now() - 5 * 24*60*60*1000), true),
+				dateModified: Zotero.Date.dateToSQL(new Date(Date.now() - 5 * 24*60*60*1000), true)
+			});
+			yield unreadExpiredFI.saveTx();
 			
 			readStillInFeed = yield createDataObject('feedItem', { libraryID: feed.libraryID });
 			// Read 2 days ago
@@ -263,7 +281,7 @@ describe("Zotero.Feed", function() {
 			
 			assert.include(feedItemIDs, feedItem.id, "feed contains unread feed item");
 			assert.include(feedItemIDs, readFeedItem.id, "feed contains read feed item");
-			assert.include(feedItemIDs, expiredFeedItem.id, "feed contains expired feed item");
+			assert.include(feedItemIDs, readExpiredFI.id, "feed contains expired feed item");
 			assert.include(feedItemIDs, readStillInFeed.id, "feed contains expired but still in rss feed item");
 			
 			yield feed.clearExpiredItems(new Set([readStillInFeed.id]));
@@ -272,7 +290,8 @@ describe("Zotero.Feed", function() {
 		});
 	
 		it('should clear expired items', function() {
-			assert.notInclude(feedItemIDs, expiredFeedItem.id, "feed no longer contain expired feed item");	
+			assert.notInclude(feedItemIDs, readExpiredFI.id, "feed no longer contains expired read feed item");
+			assert.notInclude(feedItemIDs, unreadExpiredFI.id, "feed no longer contains expired feed item");	
 		});
 		
 		it('should not clear read items that have not expired yet', function() {
@@ -294,14 +313,11 @@ describe("Zotero.Feed", function() {
 		var modifiedFeedUrl = getTestDataUrl("feedModified.rss");
 		
 		before(function() {
-			scheduleNextFeedCheck = sinon.stub(Zotero.Feeds, 'scheduleNextFeedCheck');
-		});
-		after(function() {
-			scheduleNextFeedCheck.restore();
+			scheduleNextFeedCheck = sinon.stub(Zotero.Feeds, 'scheduleNextFeedCheck').resolves();
 		});
 		
 		beforeEach(function* (){
-			scheduleNextFeedCheck.reset();
+			scheduleNextFeedCheck.resetHistory();
 			feed = yield createFeed();
 			feed._feedUrl = feedUrl;
 			yield feed.updateFeed();
@@ -311,13 +327,15 @@ describe("Zotero.Feed", function() {
 			yield clearFeeds();
 		});
 		
+		after(function() {
+			scheduleNextFeedCheck.restore();
+		});
+		
 		it('should schedule next feed check', function* () {
-			
 			let feed = yield createFeed();
 			feed._feedUrl = feedUrl;
 			yield feed.updateFeed();
 			assert.equal(scheduleNextFeedCheck.called, true);
-			
 		});
 		
 		it('should add new feed items', function* () {
@@ -393,11 +411,11 @@ describe("Zotero.Feed", function() {
 		})
 		it("should not allow adding collections", function* () {
 			let collection = new Zotero.Collection({ name: 'test', libraryID: feed.libraryID });
-			yield assert.isRejected(collection.saveTx({ skipEditCheck: true }), /^Error: Cannot add /);
+			yield assert.isRejected(collection.saveTx({ skipEditCheck: true }), /^Cannot add /);
 		});
 		it("should not allow adding saved search", function* () {
 			let search = new Zotero.Search({ name: 'test', libraryID: feed.libraryID });
-			yield assert.isRejected(search.saveTx({ skipEditCheck: true }), /^Error: Cannot add /);
+			yield assert.isRejected(search.saveTx({ skipEditCheck: true }), /^Cannot add /);
 		});
 		it("should allow adding feed item", function* () {
 			let feedItem = new Zotero.FeedItem('book', { guid: Zotero.randomString() });

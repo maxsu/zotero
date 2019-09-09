@@ -62,18 +62,18 @@ Zotero.DataObjects.prototype._ZDO_idOnly = false;
 
 // Public properties
 Zotero.defineProperty(Zotero.DataObjects.prototype, 'idColumn', {
-	get: function() this._ZDO_id
+	get: function() { return this._ZDO_id; }
 });
 Zotero.defineProperty(Zotero.DataObjects.prototype, 'table', {
-	get: function() this._ZDO_table
+	get: function() { return this._ZDO_table; }
 });
 
 Zotero.defineProperty(Zotero.DataObjects.prototype, 'relationsTable', {
-	get: function() this._ZDO_object + 'Relations'
+	get: function() { return this._ZDO_object + 'Relations'; }
 });
 
 Zotero.defineProperty(Zotero.DataObjects.prototype, 'primaryFields', {
-	get: function () Object.keys(this._primaryDataSQLParts)
+	get: function () { return Object.keys(this._primaryDataSQLParts); }
 }, {lazy: true});
 
 Zotero.defineProperty(Zotero.DataObjects.prototype, "_primaryDataSQLWhere", {
@@ -81,7 +81,7 @@ Zotero.defineProperty(Zotero.DataObjects.prototype, "_primaryDataSQLWhere", {
 });
 
 Zotero.defineProperty(Zotero.DataObjects.prototype, 'primaryDataSQLFrom', {
-	get: function() " " + this._primaryDataSQLFrom + " " + this._primaryDataSQLWhere
+	get: function() { return " " + this._primaryDataSQLFrom + " " + this._primaryDataSQLWhere; }
 }, {lateInit: true});
 
 Zotero.DataObjects.prototype.init = function() {
@@ -172,6 +172,15 @@ Zotero.DataObjects.prototype.getAsync = Zotero.Promise.coroutine(function* (ids,
 	
 	for (let i=0; i<ids.length; i++) {
 		let id = ids[i];
+		
+		if (!Number.isInteger(id)) {
+			// TEMP: Re-enable test when removed
+			let e = new Error(`${this._ZDO_object} ID '${id}' is not an integer (${typeof id})`);
+			Zotero.logError(e);
+			id = parseInt(id);
+			//throw new Error(`${this._ZDO_object} ID '${id}' is not an integer (${typeof id})`);
+		}
+		
 		// Check if already loaded
 		if (this._objectCache[id]) {
 			toReturn.push(this._objectCache[id]);
@@ -220,6 +229,12 @@ Zotero.DataObjects.prototype.getAsync = Zotero.Promise.coroutine(function* (ids,
 Zotero.DataObjects.prototype.getLoaded = function () {
 	return Object.keys(this._objectCache).map(id => this._objectCache[id]);
 }
+
+
+Zotero.DataObjects.prototype.getAllIDs = function (libraryID) {
+	var sql = `SELECT ${this._ZDO_id} FROM ${this._ZDO_table} WHERE libraryID=?`;
+	return Zotero.DB.columnQueryAsync(sql, [libraryID]);
+};
 
 
 Zotero.DataObjects.prototype.getAllKeys = function (libraryID) {
@@ -310,6 +325,11 @@ Zotero.DataObjects.prototype.exists = function (id) {
 }
 
 
+Zotero.DataObjects.prototype.existsByKey = function (key) {
+	return !!this.getIDFromLibraryAndKey(id);
+}
+
+
 /**
  * @return {Object} Object with 'libraryID' and 'key'
  */
@@ -320,9 +340,10 @@ Zotero.DataObjects.prototype.getLibraryAndKeyFromID = function (id) {
 
 
 Zotero.DataObjects.prototype.getIDFromLibraryAndKey = function (libraryID, key) {
-	if (!libraryID) {
-		throw new Error("libraryID not provided");
-	}
+	if (!libraryID) throw new Error("Library ID not provided");
+	// TEMP: Just warn for now
+	//if (!key) throw new Error("Key not provided");
+	if (!key) Zotero.logError("Key not provided");
 	return (this._objectIDs[libraryID] && this._objectIDs[libraryID][key])
 		? this._objectIDs[libraryID][key] : false;
 }
@@ -470,16 +491,20 @@ Zotero.DataObjects.prototype.loadAll = Zotero.Promise.coroutine(function* (libra
 		+ (ids && ids.length == 1 ? this._ZDO_object : this._ZDO_objects)
 		+ " in " + library.name);
 	
-	library.setDataLoading(this._ZDO_object);
+	if (!ids) {
+		library.setDataLoading(this._ZDO_object);
+	}
 	
 	let dataTypes = this.ObjectClass.prototype._dataTypes;
 	for (let i = 0; i < dataTypes.length; i++) {
 		yield this._loadDataTypeInLibrary(dataTypes[i], libraryID, ids);
 	}
 	
-	Zotero.debug(`Loaded all ${this._ZDO_objects} in ${library.name} in ${new Date() - t} ms`);
+	Zotero.debug(`Loaded ${this._ZDO_objects} in ${library.name} in ${new Date() - t} ms`);
 	
-	library.setDataLoaded(this._ZDO_object);
+	if (!ids) {
+		library.setDataLoaded(this._ZDO_object);
+	}
 });
 
 
@@ -861,12 +886,12 @@ Zotero.DataObjects.prototype.isEditable = function (obj) {
 		return true;
 	}
 	
-	if (!Zotero.Libraries.isEditable(libraryID)) return false;
+	if (!Zotero.Libraries.get(libraryID).editable) return false;
 	
 	if (obj.objectType == 'item' && obj.isAttachment()
 		&& (obj.attachmentLinkMode == Zotero.Attachments.LINK_MODE_IMPORTED_URL ||
 			obj.attachmentLinkMode == Zotero.Attachments.LINK_MODE_IMPORTED_FILE)
-		&& !Zotero.Libraries.isFilesEditable(libraryID)
+		&& !Zotero.Libraries.get(libraryID).filesEditable
 	) {
 		return false;
 	}
@@ -896,6 +921,7 @@ Zotero.DataObjects.prototype.getPrimaryDataSQLPart = function (part) {
  *
  * @param {Integer|Integer[]} ids - Object ids
  * @param {Object} [options] - See Zotero.DataObject.prototype.erase
+ * @param {Function} [options.onProgress] - f(progress, progressMax)
  * @return {Promise}
  */
 Zotero.DataObjects.prototype.erase = Zotero.Promise.coroutine(function* (ids, options = {}) {
@@ -907,6 +933,9 @@ Zotero.DataObjects.prototype.erase = Zotero.Promise.coroutine(function* (ids, op
 				continue;
 			}
 			yield obj.erase(options);
+			if (options.onProgress) {
+				options.onProgress(i + 1, ids.length);
+			}
 		}
 		this.unload(ids);
 	}.bind(this));

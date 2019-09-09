@@ -27,8 +27,8 @@
 Zotero.Sync.Storage = new function () {
 	
 	// TEMP
-	this.__defineGetter__("defaultError", function () Zotero.getString('sync.storage.error.default', Zotero.appName));
-	this.__defineGetter__("defaultErrorRestart", function () Zotero.getString('sync.storage.error.defaultRestart', Zotero.appName));
+	this.__defineGetter__("defaultError", function () { return Zotero.getString('sync.storage.error.default', Zotero.appName); });
+	this.__defineGetter__("defaultErrorRestart", function () { return Zotero.getString('sync.storage.error.defaultRestart', Zotero.appName); });
 	
 	var _itemDownloadPercentages = {};
 	
@@ -97,6 +97,10 @@ Zotero.Sync.Storage = new function () {
 	}
 	
 	
+	/**
+	 * @param {String} libraryKey
+	 * @param {Number|NULL}
+	 */
 	this.setItemDownloadPercentage = function (libraryKey, percentage) {
 		Zotero.debug("Setting image download percentage to " + percentage
 			+ " for item " + libraryKey);

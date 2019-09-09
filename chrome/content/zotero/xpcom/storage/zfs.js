@@ -145,8 +145,8 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 					
 					return false;
 				}),
-				onProgress: function (a, b, c) {
-					request.onProgress(a, b, c)
+				onProgress: function (req, progress, progressMax) {
+					request.onProgress(progress, progressMax);
 				},
 				onStop: function (req, status, res) {
 					request.setChannel(false);
@@ -156,6 +156,17 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 							Zotero.debug("Remote file not found for item " + item.libraryKey);
 							deferred.resolve(new Zotero.Sync.Storage.Result);
 							return;
+						}
+						
+						// Check for SSL certificate error
+						if (status == 0) {
+							try {
+								Zotero.HTTP.checkSecurity(req);
+							}
+							catch (e) {
+								deferred.reject(e);
+								return;
+							}
 						}
 						
 						// If S3 connection is interrupted, delay and retry, or bail if too many
@@ -246,7 +257,38 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 	
 	uploadFile: Zotero.Promise.coroutine(function* (request) {
 		var item = Zotero.Sync.Storage.Utilities.getItemFromRequest(request);
-		if (yield Zotero.Attachments.hasMultipleFiles(item)) {
+		var multipleFiles = yield Zotero.Attachments.hasMultipleFiles(item);
+		
+		// If we got a quota error for this library, skip upload for all multi-file attachments
+		// and for single-file attachments that are bigger than the remaining space. This is cleared
+		// in storageEngine for manual syncs.
+		var remaining = Zotero.Sync.Storage.Local.storageRemainingForLibrary.get(item.libraryID);
+		if (remaining !== undefined) {
+			let skip = false;
+			if (multipleFiles) {
+				Zotero.debug("Skipping multi-file upload after quota error");
+				skip = true;
+			}
+			else {
+				let size;
+				try {
+					// API rounds megabytes to 1 decimal place
+					size = ((yield OS.File.stat(item.getFilePath())).size / 1024 / 1024).toFixed(1);
+				}
+				catch (e) {
+					Zotero.logError(e);
+				}
+				if (size >= remaining) {
+					Zotero.debug(`Skipping file upload after quota error (${size} >= ${remaining})`);
+					skip = true;
+				}
+			}
+			if (skip) {
+				throw yield this._getQuotaError(item);
+			}
+		}
+		
+		if (multipleFiles) {
 			let created = yield Zotero.Sync.Storage.Utilities.createUploadFile(request);
 			if (!created) {
 				return new Zotero.Sync.Storage.Result;
@@ -374,33 +416,50 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 		}
 		body = body.join('&');
 		
-		try {
-			var req = yield this.apiClient.makeRequest(
-				"POST",
-				uri,
-				{
-					body,
-					headers,
-					// This should include all errors in _handleUploadAuthorizationFailure()
-					successCodes: [200, 201, 204, 403, 404, 412, 413],
-					debug: true
-				}
-			);
-		}
-		catch (e) {
-			if (e instanceof Zotero.HTTP.UnexpectedStatusException) {
-				let msg = "Unexpected status code " + e.status + " in " + funcName
-					 + " (" + item.libraryKey + ")";
-				Zotero.logError(msg);
-				Zotero.debug(e.xmlhttp.getAllResponseHeaders());
-				throw new Error(Zotero.Sync.Storage.defaultError);
+		var req;
+		while (true) {
+			try {
+				req = yield this.apiClient.makeRequest(
+					"POST",
+					uri,
+					{
+						body,
+						headers,
+						// This should include all errors in _handleUploadAuthorizationFailure()
+						successCodes: [200, 201, 204, 403, 404, 412, 413],
+						debug: true
+					}
+				);
 			}
-			throw e;
-		}
-		
-		var result = yield this._handleUploadAuthorizationFailure(req, item);
-		if (result instanceof Zotero.Sync.Storage.Result) {
-			return result;
+			catch (e) {
+				if (e instanceof Zotero.HTTP.UnexpectedStatusException) {
+					let msg = "Unexpected status code " + e.status + " in " + funcName
+						 + " (" + item.libraryKey + ")";
+					Zotero.logError(msg);
+					Zotero.debug(e.xmlhttp.getAllResponseHeaders());
+					throw new Error(Zotero.Sync.Storage.defaultError);
+				}
+				throw e;
+			}
+			
+			let result = yield this._handleUploadAuthorizationFailure(req, item);
+			if (result instanceof Zotero.Sync.Storage.Result) {
+				return result;
+			}
+			// If remote attachment exists but has no hash (which can happen for an old (pre-4.0?)
+			// attachment with just an mtime, or after a storage purge), send again with If-None-Match
+			else if (result == "ERROR_412_WITHOUT_VERSION") {
+				if (headers["If-None-Match"]) {
+					throw new Error("412 returned for request with If-None-Match");
+				}
+				delete headers["If-Match"];
+				headers["If-None-Match"] = "*";
+				storedHash = null;
+				Zotero.debug("Retrying with If-None-Match");
+			}
+			else {
+				break;
+			}
 		}
 		
 		try {
@@ -459,28 +518,24 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 			);
 			throw e;
 		}
+		// This shouldn't happen, but if it does, mark item for upload and restart sync
 		else if (req.status == 404) {
-			Components.utils.reportError("Unexpected status code 404 in upload authorization "
-				+ "request (" + item.libraryKey + ")");
-			
-			// TODO: Make an API request to fix this
-			
-			throw new Error(Zotero.Sync.Storage.defaultError);
+			Zotero.logError(`Item ${item.libraryID}/${item.key} not found in upload authorization `
+				+ 'request -- marking for upload');
+			yield Zotero.Sync.Data.Local.markObjectAsUnsynced(item);
+			return new Zotero.Sync.Storage.Result({
+				syncRequired: true
+			});
 		}
 		else if (req.status == 412) {
-			Zotero.debug("412 BUT WE'RE COOL");
 			let version = req.getResponseHeader('Last-Modified-Version');
 			if (!version) {
-				throw new Error("Last-Modified-Version header not provided");
+				return "ERROR_412_WITHOUT_VERSION";
 			}
 			if (version > item.version) {
 				return new Zotero.Sync.Storage.Result({
 					syncRequired: true
 				});
-			}
-			if (version < item.version) {
-				throw new Error("Last-Modified-Version is lower than item version "
-					+ `(${version} < ${item.version})`);
 			}
 			
 			// Get updated item metadata
@@ -541,50 +596,15 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 				);
 			}
 			
-			let text, buttonText = null, buttonCallback;
-			let libraryType = item.library.libraryType;
+			// Store the remaining space so that we can skip files bigger than that until the next
+			// manual sync
+			let usage = req.getResponseHeader('Zotero-Storage-Usage');
+			let quota = req.getResponseHeader('Zotero-Storage-Quota');
+			Zotero.Sync.Storage.Local.storageRemainingForLibrary.set(item.libraryID, quota - usage);
 			
-			// Group file
-			if (libraryType == 'group') {
-				var group = Zotero.Groups.getByLibraryID(item.libraryID);
-				text = Zotero.getString('sync.storage.error.zfs.groupQuotaReached1', group.name) + "\n\n"
-						+ Zotero.getString('sync.storage.error.zfs.groupQuotaReached2');
-			}
-			// Personal file
-			else {
-				text = Zotero.getString('sync.storage.error.zfs.personalQuotaReached1') + "\n\n"
-						+ Zotero.getString('sync.storage.error.zfs.personalQuotaReached2');
-				buttonText = Zotero.getString('sync.storage.openAccountSettings');
-				buttonCallback = function () {
-					var url = "https://www.zotero.org/settings/storage";
-					
-					var wm = Components.classes["@mozilla.org/appshell/window-mediator;1"]
-								.getService(Components.interfaces.nsIWindowMediator);
-					var win = wm.getMostRecentWindow("navigator:browser");
-					win.ZoteroPane.loadURI(url, { metaKey: true, ctrlKey: true, shiftKey: true });
-				}
-			}
-			
-			var filename = item.attachmentFilename;
-			var fileSize = (yield OS.File.stat(item.getFilePath())).size;
-			
-			text += "\n\n" + filename + " (" + Math.round(fileSize / 1024) + "KB)";
-			
-			let e = new Zotero.Error(
-				text,
-				"ZFS_OVER_QUOTA",
-				{
-					dialogButtonText: buttonText,
-					dialogButtonCallback: buttonCallback
-				}
-			);
-			e.errorType = 'warning';
-			Zotero.debug(e, 2);
-			Components.utils.reportError(e);
-			throw e;
+			throw yield this._getQuotaError(item);
 		}
 	}),
-	
 	
 	/**
 	 * Given parameters from authorization, upload file to S3
@@ -599,7 +619,11 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 		var file = yield this._getUploadFile(item);
 		
 		Components.utils.importGlobalProperties(["File"]);
-		file = new File(file);
+		file = File.createFromFileName ? File.createFromFileName(file.path) : new File(file);
+		// File.createFromFileName() returns a Promise in Fx54+
+		if (file.then) {
+			file = yield file;
+		}
 		
 		var blob = new Blob([params.prefix, file, params.suffix]);
 		
@@ -626,6 +650,11 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 			);
 		}
 		catch (e) {
+			// Certificate error
+			if (e instanceof Zotero.Error) {
+				throw e;
+			}
+			
 			// For timeouts and failures from S3, which happen intermittently,
 			// wait a little and try again
 			let timeoutMessage = "Your socket connection to the server was not read from or "
@@ -636,6 +665,8 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 					Zotero.debug(this._s3ConsecutiveFailures
 						+ " consecutive S3 failures -- aborting", 1);
 					this._s3ConsecutiveFailures = 0;
+					let e = Zotero.getString('sync.storage.error.zfs.restart', Zotero.appName);
+					throw new Error(e);
 				}
 				else {
 					let msg = "S3 returned " + e.status + " (" + item.libraryKey + ") "
@@ -713,7 +744,8 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 					successCodes: [204],
 					requestObserver: function (xmlhttp) {
 						request.setChannel(xmlhttp.channel);
-					}
+					},
+					debug: true
 				}
 			);
 		}
@@ -977,5 +1009,45 @@ Zotero.Sync.Storage.Mode.ZFS.prototype = {
 			return result;
 		}
 		return this._uploadFile(request, item, result);
-	})
+	}),
+	
+	
+	_getQuotaError: async function (item) {
+		var text, buttonText = null, buttonCallback;
+		var libraryType = item.library.libraryType;
+		
+		// Group file
+		if (libraryType == 'group') {
+			let group = Zotero.Groups.getByLibraryID(item.libraryID);
+			text = Zotero.getString('sync.storage.error.zfs.groupQuotaReached1', group.name) + "\n\n"
+					+ Zotero.getString('sync.storage.error.zfs.groupQuotaReached2');
+		}
+		// Personal file
+		else {
+			text = Zotero.getString('sync.storage.error.zfs.personalQuotaReached1') + "\n\n"
+					+ Zotero.getString('sync.storage.error.zfs.personalQuotaReached2');
+			buttonText = Zotero.getString('sync.storage.openAccountSettings');
+			buttonCallback = function () {
+				let url = "https://www.zotero.org/settings/storage";
+				let win = Services.wm.getMostRecentWindow("navigator:browser");
+				win.ZoteroPane.loadURI(url, { metaKey: true, ctrlKey: true, shiftKey: true });
+			}
+		}
+		
+		var filename = item.attachmentFilename;
+		var fileSize = (await OS.File.stat(item.getFilePath())).size;
+		
+		text += "\n\n" + filename + " (" + Math.round(fileSize / 1024) + " KB)";
+		
+		var e = new Zotero.Error(
+			text,
+			"ZFS_OVER_QUOTA",
+			{
+				dialogButtonText: buttonText,
+				dialogButtonCallback: buttonCallback
+			}
+		);
+		e.errorType = 'warning';
+		return e;
+	}
 }

@@ -53,10 +53,10 @@ var Zotero_CSL_Preview = new function() {
 		progressWin.show();
 		progressWin.startCloseTimer();
 		var f = function() {
-			var styles = Zotero.Styles.getAll();
+			var styles = Zotero.Styles.getVisible();
 			// XXX needs its own string really for the title!
 			var str = '<html><head><title></title></head><body>';
-			for each(var style in styles) {
+			for (let style of styles) {
 				if (style.source) {
 					continue;
 				}

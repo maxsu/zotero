@@ -24,7 +24,18 @@
 */
 
 EXPORTED_SYMBOLS = ["ConcurrentCaller"];
-Components.utils.import("resource://zotero/bluebird.js");
+
+if (!(typeof process === 'object' && process + '' === '[object process]')) {
+	// Components.utils.import('resource://zotero/require.js');
+	// Not using Cu.import here since we don't want the require module to be cached
+	// for includes within ZoteroPane or other code where we want the window instance available to modules.
+	Components.classes["@mozilla.org/moz/jssubscript-loader;1"]
+		.getService(Components.interfaces.mozIJSSubScriptLoader)
+		.loadSubScript('resource://zotero/require.js');
+	var Promise = require('resource://zotero/bluebird.js');
+} else {
+	Promise = require('bluebird');
+}
 
 /**
  * Call a fixed number of functions at once, queueing the rest until slots
@@ -55,6 +66,8 @@ Components.utils.import("resource://zotero/bluebird.js");
  * @param {Integer} [options.interval] - Interval between the end of one function run and the
  *     beginning of another, in milliseconds
  * @param {Function} [options.logger]
+ * @param {Object} [options.Promise] The Zotero instance of Promise to allow
+ *		stubbing/spying in tests
  */
 ConcurrentCaller = function (options = {}) {
 	if (typeof options == 'number') {
@@ -65,6 +78,8 @@ ConcurrentCaller = function (options = {}) {
 	}
 	
 	if (!options.numConcurrent) throw new Error("numConcurrent must be provided");
+	
+	if (options.Promise) Promise = options.Promise;
 	
 	this.stopOnError = options.stopOnError || false;
 	this.onError = options.onError || null;
@@ -165,12 +180,6 @@ ConcurrentCaller.prototype.runAll = function () {
 }
 
 
-ConcurrentCaller.prototype.fcall = function (func) {
-	this._log("fcall() is deprecated -- use start()");
-	return this.start(func);
-}
-
-
 /**
  * Wait for all running tasks to complete
  *
@@ -227,7 +236,8 @@ ConcurrentCaller.prototype._processNext = function () {
 		this._numRunning--;
 		
 		this._log("Error in function (" + this._numRunning + "/" + this.numConcurrent + ", "
-			+ this._queue.length + " in queue)");
+			+ this._queue.length + " in queue)"
+			+ ((!this.onError && !this.stopOnError) ? ": " + e : ""));
 		
 		if (this.onError) {
 			this.onError(e);
@@ -275,3 +285,7 @@ ConcurrentCaller.prototype._log = function (msg) {
 		this._logger("[ConcurrentCaller] " + (this._id ? `[${this._id}] ` : "") + msg);
 	}
 };
+
+if (typeof process === 'object' && process + '' === '[object process]'){
+    module.exports = ConcurrentCaller;
+}

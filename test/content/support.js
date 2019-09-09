@@ -1,3 +1,5 @@
+chai.use(chaiAsPromised);
+
 // Useful "constants"
 var sqlDateTimeRe = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 var isoDateTimeRe = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -15,6 +17,16 @@ function waitForDOMEvent(target, event, capture) {
 	}
 	target.addEventListener(event, func, capture);
 	return deferred.promise;
+}
+
+async function waitForRecognizer() {
+	var win = await waitForWindow('chrome://zotero/content/progressQueueDialog.xul')
+	// Wait for status to show as complete
+	var completeStr = Zotero.getString("general.finished");
+	while (win.document.getElementById("label").value != completeStr) {
+		await Zotero.Promise.delay(20);
+	}
+	return win;
 }
 
 /**
@@ -35,7 +47,7 @@ function loadWindow(winurl, argument) {
  * @return {Promise<ChromeWindow>}
  */
 function loadBrowserWindow() {
-	var win = window.openDialog("chrome://browser/content/browser.xul", "", "all,height=400,width=1000");
+	var win = window.openDialog("chrome://browser/content/browser.xul", "", "all,height=700,width=1000");
 	return waitForDOMEvent(win, "load").then(function() {
 		return win;
 	});
@@ -58,6 +70,22 @@ var loadZoteroPane = Zotero.Promise.coroutine(function* (win) {
 	return win;
 });
 
+var loadPrefPane = Zotero.Promise.coroutine(function* (paneName) {
+	var id = 'zotero-prefpane-' + paneName;
+	var win = yield loadWindow("chrome://zotero/content/preferences/preferences.xul", {
+		pane: id
+	});
+	var doc = win.document;
+	var defer = Zotero.Promise.defer();
+	var pane = doc.getElementById(id);
+	if (!pane.loaded) {
+		pane.addEventListener('paneload', () => defer.resolve());
+		yield defer.promise;
+	}
+	return win;
+});
+
+
 /**
  * Waits for a window with a specific URL to open. Returns a promise for the window, and
  * optionally passes the window to a callback immediately for use with modal dialogs,
@@ -65,39 +93,39 @@ var loadZoteroPane = Zotero.Promise.coroutine(function* (win) {
  */
 function waitForWindow(uri, callback) {
 	var deferred = Zotero.Promise.defer();
-	Components.utils.import("resource://gre/modules/Services.jsm");
 	var loadobserver = function(ev) {
 		ev.originalTarget.removeEventListener("load", loadobserver, false);
 		Zotero.debug("Window opened: " + ev.target.location.href);
-		if(ev.target.location.href == uri) {
-			Services.ww.unregisterNotification(winobserver);
-			var win = ev.target.docShell
-				.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
-				.getInterface(Components.interfaces.nsIDOMWindow);
-			// Give window code time to run on load
-			win.setTimeout(function () {
-				if (callback) {
-					try {
-						// If callback is a promise, wait for it
-						let maybePromise = callback(win);
-						if (maybePromise && maybePromise.then) {
-							maybePromise.then(() => deferred.resolve(win)).catch(e => deferred.reject(e));
-							return;
-						}
-					}
-					catch (e) {
-						Zotero.logError(e);
-						win.close();
-						deferred.reject(e);
+		
+		if (ev.target.location.href != uri) {
+			Zotero.debug(`Ignoring window ${uri} in waitForWindow()`);
+			return;
+		}
+		
+		Services.ww.unregisterNotification(winobserver);
+		var win = ev.target.docShell
+			.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
+			.getInterface(Components.interfaces.nsIDOMWindow);
+		// Give window code time to run on load
+		 win.setTimeout(function () {
+			if (callback) {
+				try {
+					// If callback returns a promise, wait for it
+					let maybePromise = callback(win);
+					if (maybePromise && maybePromise.then) {
+						maybePromise.then(() => deferred.resolve(win)).catch(e => deferred.reject(e));
 						return;
 					}
 				}
-				deferred.resolve(win);
-			});
-		}
-		else {
-			Zotero.debug(`Ignoring window ${uri} in waitForWindow()`);
-		}
+				catch (e) {
+					Zotero.logError(e);
+					win.close();
+					deferred.reject(e);
+					return;
+				}
+			}
+			deferred.resolve(win);
+		});
 	};
 	var winobserver = {"observe":function(subject, topic, data) {
 		if(topic != "domwindowopened") return;
@@ -174,16 +202,43 @@ var waitForItemsLoad = Zotero.Promise.coroutine(function* (win, collectionRowToS
 	var zp = win.ZoteroPane;
 	var cv = zp.collectionsView;
 	
-	var deferred = Zotero.Promise.defer();
-	cv.addEventListener('load', () => deferred.resolve());
-	yield deferred.promise;
+	yield cv.waitForLoad();
 	if (collectionRowToSelect !== undefined) {
 		yield cv.selectWait(collectionRowToSelect);
 	}
-	deferred = Zotero.Promise.defer();
-	zp.itemsView.addEventListener('load', () => deferred.resolve());
-	return deferred.promise;
+	yield zp.itemsView.waitForLoad();
 });
+
+/**
+ * Return a promise that resolves once the tag selector has updated
+ *
+ * Some operations result in two tag selector updates, one from the notify() and another from
+ * onItemViewChanged(). Pass 2 for numUpdates to wait for both.
+ */
+var waitForTagSelector = function (win, numUpdates = 1) {
+	var updates = 0;
+	
+	var zp = win.ZoteroPane;
+	var deferred = Zotero.Promise.defer();
+	if (zp.tagSelectorShown()) {
+		let tagSelector = zp.tagSelector;
+		let componentDidUpdate = tagSelector.componentDidUpdate;
+		tagSelector.componentDidUpdate = function() {
+			updates++;
+			if (updates == numUpdates) {
+				deferred.resolve();
+				tagSelector.componentDidUpdate = componentDidUpdate;
+			}
+			if (typeof componentDidUpdate == 'function') {
+				componentDidUpdate.call(this, arguments);
+			}
+		}
+	}
+	else {
+		deferred.resolve();
+	}
+	return deferred.promise;
+};
 
 /**
  * Waits for a single item event. Returns a promise for the item ID(s).
@@ -194,6 +249,8 @@ function waitForItemEvent(event) {
 
 /**
  * Wait for a single notifier event and return a promise for the data
+ *
+ * Tests run after all other handlers (priority 101, since handlers are 100 by default)
  */
 function waitForNotifierEvent(event, type) {
 	if (!event) throw new Error("event not provided");
@@ -207,7 +264,7 @@ function waitForNotifierEvent(event, type) {
 				extraData: extraData
 			});
 		}
-	}}, [type]);
+	}}, [type], 'test', 101);
 	return deferred.promise;
 }
 
@@ -215,7 +272,6 @@ function waitForNotifierEvent(event, type) {
  * Looks for windows with a specific URL.
  */
 function getWindows(uri) {
-	Components.utils.import("resource://gre/modules/Services.jsm");
 	var enumerator = Services.wm.getEnumerator(null);
 	var wins = [];
 	while(enumerator.hasMoreElements()) {
@@ -311,6 +367,7 @@ var createGroup = Zotero.Promise.coroutine(function* (props = {}) {
 	if (props.libraryVersion) {
 		group.libraryVersion = props.libraryVersion;
 	}
+	group.archived = props.archived === undefined ? false : props.archived;
 	yield group.saveTx();
 	return group;
 });
@@ -321,8 +378,9 @@ var createFeed = Zotero.Promise.coroutine(function* (props = {}) {
 	feed.description = props.description || "";
 	feed.url = props.url || 'http://www.' + Zotero.Utilities.randomString() + '.com/feed.rss';
 	feed.refreshInterval = props.refreshInterval || 12;
-	feed.cleanupAfter = props.cleanupAfter || 2;
-	yield feed.saveTx();
+	feed.cleanupReadAfter = props.cleanupReadAfter || 2;
+	feed.cleanupUnreadAfter = props.cleanupUnreadAfter || 30;
+	yield feed.saveTx(props.saveOptions);
 	return feed;
 });
 
@@ -361,24 +419,39 @@ function createUnsavedDataObject(objectType, params = {}) {
 	var itemType;
 	if (objectType == 'item' || objectType == 'feedItem') {
 		itemType = params.itemType || 'book';
-		allowedParams.push('dateAdded', 'dateModified');
+		allowedParams.push('deleted', 'dateAdded', 'dateModified');
 	}
-	
+	if (objectType == 'item') {
+		allowedParams.push('inPublications');
+	}
 	if (objectType == 'feedItem') {
 		params.guid = params.guid || Zotero.randomString();
 		allowedParams.push('guid');
 	}
 	
 	var obj = new Zotero[Zotero.Utilities.capitalize(objectType)](itemType);
+	if (params.libraryID) {
+		obj.libraryID = params.libraryID;
+	}
 	
 	switch (objectType) {
 	case 'item':
 	case 'feedItem':
+		if (params.parentItemID) {
+			params.parentID = params.parentItemID;
+			delete params.parentItemID;
+		}
 		if (params.title !== undefined || params.setTitle) {
 			obj.setField('title', params.title !== undefined ? params.title : Zotero.Utilities.randomString());
 		}
 		if (params.collections !== undefined) {
 			obj.setCollections(params.collections);
+		}
+		if (params.tags !== undefined) {
+			obj.setTags(params.tags);
+		}
+		if (params.note !== undefined) {
+			obj.setNote(params.note);
 		}
 		break;
 	
@@ -431,24 +504,34 @@ function getPromiseError(promise) {
 }
 
 /**
- * Ensures that the PDF tools are installed, or installs them if not.
- *
- * @return {Promise}
+ * Init paths for PDF tools and data
  */
-var installPDFTools = Zotero.Promise.coroutine(function* () {
-	if(Zotero.Fulltext.pdfConverterIsRegistered() && Zotero.Fulltext.pdfInfoIsRegistered()) {
-		return;
+function initPDFToolsPath() {
+	let pdfConvertedFileName = 'pdftotext';
+	let pdfInfoFileName = 'pdfinfo';
+	
+	if (Zotero.isWin) {
+		pdfConvertedFileName += '-win.exe';
+		pdfInfoFileName += '-win.exe';
 	}
-	var version = yield Zotero.Fulltext.getLatestPDFToolsVersion();
-	yield Zotero.Fulltext.downloadPDFTool('info', version);
-	yield Zotero.Fulltext.downloadPDFTool('converter', version);
-});
-
-/**
- * @return {Promise}
- */
-function uninstallPDFTools() {
-	return Zotero.Fulltext.uninstallPDFTools();
+	else if (Zotero.isMac) {
+		pdfConvertedFileName += '-mac';
+		pdfInfoFileName += '-mac';
+	}
+	else {
+		let cpu = Zotero.platform.split(' ')[1];
+		pdfConvertedFileName += '-linux-' + cpu;
+		pdfInfoFileName += '-linux-' + cpu;
+	}
+	
+	let pdfToolsPath = OS.Path.join(Zotero.Profile.dir, 'pdftools');
+	let pdfConverterPath = OS.Path.join(pdfToolsPath, pdfConvertedFileName);
+	let pdfInfoPath = OS.Path.join(pdfToolsPath, pdfInfoFileName);
+	let pdfDataPath = OS.Path.join(pdfToolsPath, 'poppler-data');
+	
+	Zotero.FullText.setPDFConverterPath(pdfConverterPath);
+	Zotero.FullText.setPDFInfoPath(pdfInfoPath);
+	Zotero.FullText.setPDFDataPath(pdfDataPath);
 }
 
 /**
@@ -456,7 +539,6 @@ function uninstallPDFTools() {
  * (i.e., test/tests/data)
  */
 function getTestDataDirectory() {
-	Components.utils.import("resource://gre/modules/Services.jsm");
 	var resource = Services.io.getProtocolHandler("resource").
 	               QueryInterface(Components.interfaces.nsIResProtocolHandler),
 	    resURI = Services.io.newURI("resource://zotero-unit-tests/data", null, null);
@@ -474,7 +556,6 @@ function getTestDataUrl(path) {
 
 /**
  * Returns an absolute path to an empty temporary directory
- * (i.e., test/tests/data)
  */
 var getTempDirectory = Zotero.Promise.coroutine(function* getTempDirectory() {
 	Components.utils.import("resource://gre/modules/osfile.jsm");
@@ -494,6 +575,16 @@ var getTempDirectory = Zotero.Promise.coroutine(function* getTempDirectory() {
 	return path;
 });
 
+var removeDir = Zotero.Promise.coroutine(function* (dir) {
+	// OS.File.DirectoryIterator, used by OS.File.removeDir(), isn't reliable on Travis,
+	// returning entry.isDir == false for subdirectories, so use nsIFile instead
+	//yield OS.File.removeDir(zipDir);
+	dir = Zotero.File.pathToFile(dir);
+	if (dir.exists()) {
+		dir.remove(true);
+	}
+});
+
 /**
  * Resets the Zotero DB and restarts Zotero. Returns a promise resolved
  * when this finishes.
@@ -501,19 +592,23 @@ var getTempDirectory = Zotero.Promise.coroutine(function* getTempDirectory() {
  * @param {Object} [options] - Initialization options, as passed to Zotero.init(), overriding
  *                             any that were set at startup
  */
-function resetDB(options = {}) {
-	Zotero.Prefs.clear('lastViewedFolder')
+async function resetDB(options = {}) {
+	resetPrefs();
 	
 	if (options.thisArg) {
 		options.thisArg.timeout(60000);
 	}
-	var db = Zotero.getZoteroDatabase();
-	return Zotero.reinit(function() {
-		db.remove(false);
-		_defaultGroup = null;
-	}, false, options).then(function() {
-		return Zotero.Schema.schemaUpdatePromise;
-	});
+	var db = Zotero.DataDirectory.getDatabase();
+	await Zotero.reinit(
+		Zotero.Promise.coroutine(function* () {
+			yield OS.File.remove(db);
+			_defaultGroup = null;
+		}),
+		false,
+		options
+	);
+	await Zotero.Schema.schemaUpdatePromise;
+	initPDFToolsPath();
 }
 
 /**
@@ -761,7 +856,7 @@ function buildDummyTranslator(translatorType, code, info={}) {
 	const TRANSLATOR_TYPES = {"import":1, "export":2, "web":4, "search":8};
 	info = Object.assign({
 		"translatorID":"dummy-translator",
-		"translatorType":TRANSLATOR_TYPES[translatorType],
+		"translatorType": Number.isInteger(translatorType) ? translatorType : TRANSLATOR_TYPES[translatorType],
 		"label":"Dummy Translator",
 		"creator":"Simon Kornblith",
 		"target":"",
@@ -771,7 +866,7 @@ function buildDummyTranslator(translatorType, code, info={}) {
 		"lastUpdated":"0000-00-00 00:00:00",
 	}, info);
 	let translator = new Zotero.Translator(info);
-	translator.code = code;
+	translator.code = JSON.stringify(info) + "\n" + code;
 	return translator;
 }
 
@@ -785,10 +880,21 @@ function importFileAttachment(filename, options = {}) {
 	let file = getTestDataDirectory();
 	filename.split('/').forEach((part) => file.append(part));
 	let importOptions = {
-		file
+		file,
+		parentItemID: options.parentID
 	};
 	Object.assign(importOptions, options);
 	return Zotero.Attachments.importFromFile(importOptions);
+}
+
+
+function importTextAttachment() {
+	return importFileAttachment('test.txt', { contentType: 'text/plain', charset: 'utf-8' });
+}
+
+
+function importHTMLAttachment() {
+	return importFileAttachment('test.html', { contentType: 'text/html', charset: 'utf-8' });
 }
 
 
@@ -801,7 +907,7 @@ function importFileAttachment(filename, options = {}) {
  *                                   that defines the response
  * @param {Object} responses - Predefined responses
  */
-function setHTTPResponse(server, baseURL, response, responses) {
+function setHTTPResponse(server, baseURL, response, responses, username, password) {
 	if (typeof response == 'string') {
 		let [topic, key] = response.split('.');
 		if (!responses[topic]) {
@@ -831,5 +937,17 @@ function setHTTPResponse(server, baseURL, response, responses) {
 		responseArray[1][i] = response.headers[i];
 	}
 	
-	server.respondWith(response.method, baseURL + response.url, responseArray);
+	if (username || password) {
+		server.respondWith(function (req) {
+			if (username && req.username != username) return;
+			if (password && req.password != password) return;
+			
+			if (req.method == response.method && req.url == baseURL + response.url) {
+				req.respond(...responseArray);
+			}
+		});
+	}
+	else {
+		server.respondWith(response.method, baseURL + response.url, responseArray);
+	}
 }

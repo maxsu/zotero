@@ -1,19 +1,26 @@
-function lookupIdentifier(win, identifier) {
+var lookupIdentifier = Zotero.Promise.coroutine(function* (win, identifier) {
 	var textbox = win.document.getElementById("zotero-lookup-textbox");
 	textbox.value = identifier;
-	win.Zotero_Lookup.accept(textbox);
-	return waitForItemEvent("add");
-}
+	var promise = waitForItemEvent("add");
+	yield win.Zotero_Lookup.accept(textbox);
+	return promise;
+});
 
-describe.skip("Add Item by Identifier", function() {
+describe("Add Item by Identifier", function() {
 	var win;
 	
 	before(function* () {
+		if (Zotero.automatedTest) {
+			this.skip();
+			return;
+		}
 		win = yield loadZoteroPane();
 	});
 	
 	after(function() {
-		win.close();
+		if (win) {
+			win.close();
+		}
 	});
 	
 	// TODO: mock external services: https://github.com/zotero/zotero/issues/699
@@ -42,6 +49,11 @@ describe.skip("Add Item by Identifier", function() {
 		});
 	});
 	
+	it.skip("should add a DOI with an open-access PDF");
+	
+	// e.g., arXiv
+	it.skip("should not add a PDF if a DOI already retrieves one");
+	
 	it("should add a PMID", function() {
 		this.timeout(10000);
 		return lookupIdentifier(win, "24297125").then(function(ids) {
@@ -65,7 +77,7 @@ describe.skip("Add Item by Identifier", function() {
 		// Fallback translator
 		var ids = yield lookupIdentifier(win, "10.5281/zenodo.55073");
 		var item = Zotero.Items.get(ids[0]);
-		assert.equal(item.getField("title"), "Comparison of Spectral Methods Through the Adjacency Matrix and the Laplacian of a Graph");
+		assert.equal(item.getField("title"), "Comparison Of Spectral Methods Through The Adjacency Matrix And The Laplacian Of A Graph");
 		assert.isTrue(item.inCollection(col.id));
 	});
 });
